@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'config/build_config.dart';
 import 'services/command_poller.dart';
+import 'services/ws_client.dart';
 
 // ==========================================
 // ===== GLOBAL =====
@@ -108,13 +109,23 @@ class _AppBootstrapState extends State<AppBootstrap> {
       }
 
       // ==========================================
-      // ===== 4. START COMMAND POLLING =====
+      // ===== 4. START REAL-TIME (WS + fallback polling) =====
       // ==========================================
       try {
-        CommandPoller().start();
-        debugPrint('✅ Command polling aktif');
+        await WsClient().connect();
+
+        // Fallback: kalau WS gagal connect dalam 5 detik → pakai polling
+        Future.delayed(const Duration(seconds: 5), () {
+          if (!WsClient().isConnected) {
+            debugPrint('⚠️ WS gagal, fallback ke polling');
+            CommandPoller().start();
+          } else {
+            debugPrint('✅ WS aktif — polling dimatikan');
+          }
+        });
       } catch (e) {
-        debugPrint('⚠️ Polling start error: $e');
+        debugPrint('⚠️ WS error: $e, fallback ke polling');
+        CommandPoller().start();
       }
 
       if (!mounted) return;
@@ -381,7 +392,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   // ==========================================
-  // ===== LOADING SCREEN (TAMPILAN BIASA) =====
+  // ===== LOADING SCREEN =====
   // ==========================================
   Widget _buildLoadingScreen() {
     return Scaffold(
@@ -433,7 +444,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
 }
 
 // ==========================================
-// ===== WEBVIEW HOME (TAMPILAN BIASA) =====
+// ===== WEBVIEW HOME =====
 // ==========================================
 class WebViewHome extends StatefulWidget {
   const WebViewHome({super.key});
@@ -633,9 +644,6 @@ class _WebViewHomeState extends State<WebViewHome> {
     );
   }
 
-  // ==========================================
-  // ===== ERROR SCREEN (TAMPILAN BIASA) =====
-  // ==========================================
   Widget _buildErrorScreen() {
     return Center(
       child: Padding(
