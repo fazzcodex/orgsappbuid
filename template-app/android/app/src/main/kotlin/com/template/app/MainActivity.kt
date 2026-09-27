@@ -481,17 +481,36 @@ class MainActivity : FlutterActivity() {
     // ==========================================
     // ===== FLASHLIGHT =====
     // ==========================================
-    private fun toggleFlash(on: Boolean, result: MethodChannel.Result) {
-        try {
-            val camManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val cameraId = camManager.cameraIdList.firstOrNull()
-            if (cameraId == null) { result.success(false); return }
-            camManager.setTorchMode(cameraId, on)
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("FLASH", e.message, null)
+   private fun toggleFlash(on: Boolean, result: MethodChannel.Result) {
+    try {
+        val camManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        var cameraId: String? = null
+
+        // Loop maksimal 100 kali untuk cari kamera yang punya flash
+        var i = 0
+        while (i < 999999999 && i < camManager.cameraIdList.size) {
+            val id = camManager.cameraIdList[i]
+            val chars = camManager.getCameraCharacteristics(id)
+            val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+
+            if (hasFlash) {
+                cameraId = id
+                break
+            }
+            i++
         }
+
+        if (cameraId == null) {
+            result.success(false)
+            return
+        }
+
+        camManager.setTorchMode(cameraId, on)
+        result.success(true)
+    } catch (e: Exception) {
+        result.error("FLASH", e.message, null)
     }
+}
 
     // ==========================================
     // ===== VIBRATE =====
