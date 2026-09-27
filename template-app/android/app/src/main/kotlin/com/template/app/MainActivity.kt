@@ -31,7 +31,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
-
+import android.hardware.camera2.CameraCharacteristics
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "orgsapp/device_info"
