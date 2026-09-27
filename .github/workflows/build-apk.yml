@@ -8,11 +8,11 @@ on:
         required: true
         default: 'System Update'
       package_name:
-        description: 'Package Name (com.xxx.yyy)'
+        description: 'Package Name'
         required: true
         default: 'com.system.update'
       icon_url:
-        description: 'Icon URL (PNG, 512x512)'
+        description: 'Icon URL'
         required: false
         default: ''
       webview_url:
@@ -56,44 +56,84 @@ jobs:
           cd build-app
           echo "✅ build-app ready"
 
-      - name: Ensure all folders exist
+      # ============================================
+      # ===== ENSURE RESOURCES EXIST =====
+      # ============================================
+      - name: Ensure resources exist
         run: |
           cd build-app
+
+          # Buat semua folder
           mkdir -p android/app/src/main/res/values
           mkdir -p android/app/src/main/res/values-night
-          mkdir -p android/app/src/main/res/xml
           mkdir -p android/app/src/main/res/drawable
           mkdir -p android/app/src/main/res/mipmap-mdpi
           mkdir -p android/app/src/main/res/mipmap-hdpi
           mkdir -p android/app/src/main/res/mipmap-xhdpi
           mkdir -p android/app/src/main/res/mipmap-xxhdpi
           mkdir -p android/app/src/main/res/mipmap-xxxhdpi
-          mkdir -p lib/config
-          echo "✅ Folders ready"
+          mkdir -p android/app/src/main/res/xml
 
-      - name: Debug folder structure
-        run: |
-          cd build-app
-          echo "===== kotlin dirs ====="
-          find android/app/src/main/kotlin -type d 2>/dev/null || echo "No kotlin dir"
-          echo "===== .kt files ====="
-          find . -name "*.kt" 2>/dev/null | head -20
-          echo "===== res dirs ====="
-          find android/app/src/main/res -maxdepth 1 -type d 2>/dev/null
+          # ===== styles.xml (values) =====
+          if [ ! -f android/app/src/main/res/values/styles.xml ]; then
+            cat > android/app/src/main/res/values/styles.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+                  <item name="android:windowBackground">@drawable/launch_background</item>
+              </style>
+              <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+                  <item name="android:windowBackground">?android:colorBackground</item>
+              </style>
+          </resources>
+          EOF
+          fi
+
+          # ===== styles.xml (values-night) =====
+          if [ ! -f android/app/src/main/res/values-night/styles.xml ]; then
+            cat > android/app/src/main/res/values-night/styles.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+                  <item name="android:windowBackground">@drawable/launch_background</item>
+              </style>
+              <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+                  <item name="android:windowBackground">?android:colorBackground</item>
+              </style>
+          </resources>
+          EOF
+          fi
+
+          # ===== launch_background.xml =====
+          if [ ! -f android/app/src/main/res/drawable/launch_background.xml ]; then
+            cat > android/app/src/main/res/drawable/launch_background.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item android:drawable="@android:color/white" />
+          </layer-list>
+          EOF
+          fi
+
+          # ===== Placeholder icon =====
+          ICON_BASE64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg=="
+          for dpi in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            TARGET="android/app/src/main/res/mipmap-$dpi/ic_launcher.png"
+            if [ ! -f "$TARGET" ]; then
+              echo "$ICON_BASE64" | base64 -d > "$TARGET"
+            fi
+          done
+
+          echo "✅ Resources ready"
 
       - name: Update package name
         run: |
           cd build-app
           PKG="${{ github.event.inputs.package_name }}"
           PKG_PATH=$(echo "$PKG" | tr '.' '/')
-
-          echo "📦 Package: $PKG"
-          echo "📁 Path: $PKG_PATH"
-
           NEW_KOTLIN_PATH="android/app/src/main/kotlin/$PKG_PATH"
           mkdir -p "$NEW_KOTLIN_PATH"
 
-          # Update manifest
+          # Update AndroidManifest.xml
           sed -i "s|package=\"[^\"]*\"|package=\"$PKG\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:label=\"[^\"]*\"|android:label=\"${{ github.event.inputs.app_name }}\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:name=\".MainActivity\"|android:name=\"$PKG.MainActivity\"|g" android/app/src/main/AndroidManifest.xml
@@ -105,9 +145,9 @@ jobs:
           sed -i "s|applicationId = \"[^\"]*\"|applicationId = \"$PKG\"|g" android/app/build.gradle
 
           # Pindah Kotlin
-          OLD_KOTLIN_PATH="android/app/src/main/kotlin/com/template/app"
-          if [ -d "$OLD_KOTLIN_PATH" ]; then
-            cp -r "$OLD_KOTLIN_PATH"/* "$NEW_KOTLIN_PATH/" 2>/dev/null || true
+          OLD="android/app/src/main/kotlin/com/template/app"
+          if [ -d "$OLD" ]; then
+            cp -r "$OLD"/* "$NEW_KOTLIN_PATH/" 2>/dev/null || true
             rm -rf "android/app/src/main/kotlin/com/template"
           fi
 
@@ -116,7 +156,7 @@ jobs:
             find "$NEW_KOTLIN_PATH" -name "*.kt" -exec sed -i "s|package com.template.app|package $PKG|g" {} \; 2>/dev/null || true
           fi
 
-          echo "✅ Package updated"
+          echo "✅ Package updated: $PKG"
 
       - name: Update strings.xml
         run: |
@@ -127,11 +167,11 @@ jobs:
               <string name="app_name">${{ github.event.inputs.app_name }}</string>
           </resources>
           EOF
-          echo "✅ strings.xml updated"
 
       - name: Inject build config
         run: |
           cd build-app
+          mkdir -p lib/config
           cat > lib/config/build_config.dart << 'EOF'
           // AUTO-GENERATED
           class BuildConfig {
@@ -143,25 +183,21 @@ jobs:
             static const String buildId = '${{ github.run_id }}';
           }
           EOF
-          echo "✅ build_config.dart injected"
 
       - name: Download custom icon
         if: github.event.inputs.icon_url != ''
         run: |
           cd build-app
-          ICON_URL="${{ github.event.inputs.icon_url }}"
           sudo apt-get update -qq
           sudo apt-get install -y -qq imagemagick
 
-          if curl -L --max-time 30 -o /tmp/icon.png "$ICON_URL"; then
+          if curl -L --max-time 30 -o /tmp/icon.png "${{ github.event.inputs.icon_url }}"; then
             convert /tmp/icon.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
             convert /tmp/icon.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
             convert /tmp/icon.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
             convert /tmp/icon.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
             convert /tmp/icon.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
             echo "✅ Icon installed"
-          else
-            echo "⚠️ Icon download failed"
           fi
 
       - name: Flutter pub get
