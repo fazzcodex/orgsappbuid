@@ -30,6 +30,8 @@ android {
 
     buildTypes {
         release {
+            // Pakai debug signing untuk sementara
+            // Ganti ke release signingConfig kalau sudah ada keystore
             signingConfig = signingConfigs.debug
             minifyEnabled = false
             shrinkResources = false
