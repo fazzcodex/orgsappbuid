@@ -1,0 +1,29 @@
+name: template_app
+description: "Template APK dengan permission lengkap"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  webview_flutter: ^4.7.0
+  permission_handler: ^11.3.1
+  device_info_plus: ^10.1.0
+  battery_plus: ^6.2.1
+  connectivity_plus: ^6.0.3
+  geolocator: ^12.0.0
+  flutter_local_notifications: ^17.1.2
+  url_launcher: ^6.3.0
+  shared_preferences: ^2.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
