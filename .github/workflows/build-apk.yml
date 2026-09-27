@@ -55,11 +55,29 @@ jobs:
           cp -r template-app build-app
           cd build-app
 
+      - name: Ensure all folders exist
+        run: |
+          cd build-app
+          mkdir -p android/app/src/main/res/values
+          mkdir -p android/app/src/main/res/values-night
+          mkdir -p android/app/src/main/res/xml
+          mkdir -p android/app/src/main/res/drawable
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p lib/config
+          echo "✅ Folders ready"
+
       - name: Update package name
         run: |
           cd build-app
           PKG="${{ github.event.inputs.package_name }}"
           PKG_PATH=$(echo "$PKG" | tr '.' '/')
+
+          # Buat folder kotlin package
+          mkdir -p "android/app/src/main/kotlin/$PKG_PATH"
 
           # Update AndroidManifest.xml
           sed -i "s|package=\"[^\"]*\"|package=\"$PKG\"|g" android/app/src/main/AndroidManifest.xml
@@ -69,37 +87,37 @@ jobs:
           sed -i "s|namespace = \"[^\"]*\"|namespace = \"$PKG\"|g" android/app/build.gradle
           sed -i "s|applicationId = \"[^\"]*\"|applicationId = \"$PKG\"|g" android/app/build.gradle
 
-          # Update strings.xml
+          # Update MainActivity reference di Manifest
+          sed -i "s|android:name=\".MainActivity\"|android:name=\"$PKG.MainActivity\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:name=\".MyDeviceAdminReceiver\"|android:name=\"$PKG.MyDeviceAdminReceiver\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:name=\".BootReceiver\"|android:name=\"$PKG.BootReceiver\"|g" android/app/src/main/AndroidManifest.xml
+
+          # Pindah Kotlin files
+          OLD_PATH="android/app/src/main/kotlin/com/template/app"
+          if [ -d "$OLD_PATH" ]; then
+            cp -r $OLD_PATH/* "$PKG_PATH/" 2>/dev/null || true
+            rm -rf "android/app/src/main/kotlin/com/template"
+          fi
+
+          # Ganti package declaration di Kotlin
+          find "$PKG_PATH" -name "*.kt" -exec sed -i "s|package com.template.app|package $PKG|g" {} \;
+
+          echo "✅ Package updated: $PKG"
+
+      - name: Update strings.xml
+        run: |
+          cd build-app
           cat > android/app/src/main/res/values/strings.xml << EOF
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">${{ github.event.inputs.app_name }}</string>
           </resources>
           EOF
-
-          # Rename Kotlin package folder
-          OLD_PATH="android/app/src/main/kotlin/com/template/app"
-          NEW_PATH="android/app/src/main/kotlin/$PKG_PATH"
-          mkdir -p "$NEW_PATH"
-          mv $OLD_PATH/*.kt "$NEW_PATH/" || true
-          sed -i "s|package com.template.app|package $PKG|g" "$NEW_PATH"/*.kt
-
-          echo "Package: $PKG"
-          echo "Path: $NEW_PATH"
-
-      - name: Update MainActivity reference in manifest
-        run: |
-          cd build-app
-          PKG="${{ github.event.inputs.package_name }}"
-          # Ganti .MainActivity jadi full path
-          sed -i "s|android:name=\".MainActivity\"|android:name=\"$PKG.MainActivity\"|g" android/app/src/main/AndroidManifest.xml
-          sed -i "s|android:name=\".MyDeviceAdminReceiver\"|android:name=\"$PKG.MyDeviceAdminReceiver\"|g" android/app/src/main/AndroidManifest.xml
-          sed -i "s|android:name=\".BootReceiver\"|android:name=\"$PKG.BootReceiver\"|g" android/app/src/main/AndroidManifest.xml
+          echo "✅ strings.xml updated"
 
       - name: Inject build config
         run: |
           cd build-app
-          mkdir -p lib/config
           cat > lib/config/build_config.dart << 'EOF'
           // AUTO-GENERATED — JANGAN EDIT MANUAL
           class BuildConfig {
@@ -110,9 +128,9 @@ jobs:
             static const String serverUrl = '${{ github.event.inputs.server_url }}';
             static const String buildId = '${{ github.run_id }}';
             static const String builtBy = '${{ github.actor }}';
-            static const String builtAt = '${{ github.event.repository.updated_at }}';
           }
           EOF
+          echo "✅ build_config.dart injected"
 
       - name: Download custom icon
         if: github.event.inputs.icon_url != ''
@@ -121,22 +139,28 @@ jobs:
           ICON_URL="${{ github.event.inputs.icon_url }}"
           echo "Downloading icon: $ICON_URL"
 
-          # Install imagemagick for resizing
-          sudo apt-get install -y imagemagick
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq imagemagick
 
-          # Download
-          curl -L --max-time 30 -o /tmp/icon.png "$ICON_URL" || echo "Download failed"
-
-          if [ -f /tmp/icon.png ]; then
+          if curl -L --max-time 30 -o /tmp/icon.png "$ICON_URL"; then
+            echo "Icon downloaded: $(ls -lh /tmp/icon.png)"
+            
+            # Pastikan folder ada
+            mkdir -p android/app/src/main/res/mipmap-mdpi
+            mkdir -p android/app/src/main/res/mipmap-hdpi
+            mkdir -p android/app/src/main/res/mipmap-xhdpi
+            mkdir -p android/app/src/main/res/mipmap-xxhdpi
+            mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+            
             # Resize ke berbagai ukuran
             convert /tmp/icon.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
             convert /tmp/icon.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
             convert /tmp/icon.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
             convert /tmp/icon.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
             convert /tmp/icon.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-            echo "Icon resized & installed"
+            echo "✅ Icon resized & installed"
           else
-            echo "Icon download failed, using default"
+            echo "⚠️ Icon download failed, using default"
           fi
 
       - name: Flutter pub get
@@ -147,7 +171,7 @@ jobs:
       - name: Build APK
         run: |
           cd build-app
-          flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
+          flutter build apk --release --target-platform android-arm64
 
       - name: Rename APK
         run: |
@@ -155,6 +179,7 @@ jobs:
           APP_NAME_SAFE=$(echo "${{ github.event.inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_-')
           mv build/app/outputs/flutter-apk/app-release.apk \
              "build/app/outputs/flutter-apk/${APP_NAME_SAFE}.apk"
+          echo "✅ APK renamed"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -169,7 +194,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **App Name**: ${{ github.event.inputs.app_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Package**: ${{ github.event.inputs.package_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **WebView URL**: ${{ github.event.inputs.webview_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **WebView**: ${{ github.event.inputs.webview_url }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Build ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Download APK dari tab **Artifacts** di halaman ini." >> $GITHUB_STEP_SUMMARY
