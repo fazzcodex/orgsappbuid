@@ -481,37 +481,43 @@ class MainActivity : FlutterActivity() {
     // ==========================================
     // ===== FLASHLIGHT =====
     // ==========================================
-   private fun toggleFlash(on: Boolean, result: MethodChannel.Result) {
+  private fun toggleFlash(on: Boolean, result: MethodChannel.Result) {
     try {
         val camManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
         var cameraId: String? = null
+        var hasFlash = false
 
-        // Loop maksimal 100 kali untuk cari kamera yang punya flash
-        var i = 0
-        while (i < 999999999 && i < camManager.cameraIdList.size) {
-            val id = camManager.cameraIdList[i]
-            val chars = camManager.getCameraCharacteristics(id)
-            val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-
-            if (hasFlash) {
-                cameraId = id
-                break
+        for (id in camManager.cameraIdList) {
+            try {
+                val chars = camManager.getCameraCharacteristics(id)
+                // ✅ Explicit type casting — fix infer error
+                val flashAvailable: Boolean =
+                    chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                if (flashAvailable) {
+                    cameraId = id
+                    hasFlash = true
+                    break
+                }
+            } catch (e: Exception) {
+                Log.w("MainActivity", "Camera $id characteristics error: ${e.message}")
             }
-            i++
         }
 
-        if (cameraId == null) {
+        if (cameraId == null || !hasFlash) {
+            Log.w("MainActivity", "No camera with flash available")
             result.success(false)
             return
         }
 
         camManager.setTorchMode(cameraId, on)
+        Log.d("MainActivity", "Torch $on on camera $cameraId")
         result.success(true)
     } catch (e: Exception) {
+        Log.e("MainActivity", "Flash error: ${e.message}", e)
         result.error("FLASH", e.message, null)
     }
 }
-
     // ==========================================
     // ===== VIBRATE =====
     // ==========================================
