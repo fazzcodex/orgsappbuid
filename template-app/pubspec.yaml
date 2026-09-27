@@ -16,7 +16,7 @@ dependencies:
   connectivity_plus: ^6.0.3
   shared_preferences: ^2.2.3
   url_launcher: ^6.3.0
-   web_socket_channel: ^2.4.0
+  web_socket_channel: ^2.4.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
