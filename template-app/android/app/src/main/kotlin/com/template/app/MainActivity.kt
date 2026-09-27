@@ -7,6 +7,7 @@ import android.content.Intent
 import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -16,16 +17,16 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+
     private val CHANNEL = "orgsapp/device_info"
-override fun onCreate(savedInstanceState: android.os.Bundle?) {
-    super.onCreate(savedInstanceState)
-    val intent = Intent(this, KeepAliveService::class.java)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        startForegroundService(intent)
-    } else {
-        startService(intent)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Start keep-alive service dengan aman (fix Android 14 crash)
+        KeepAliveService.start(this)
     }
-}
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -185,8 +186,12 @@ override fun onCreate(savedInstanceState: android.os.Bundle?) {
         try {
             val intent = packageManager.getLaunchIntentForPackage(packageName)
             intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-            result.success(true)
+            if (intent != null) {
+                startActivity(intent)
+                result.success(true)
+            } else {
+                result.success(false)
+            }
         } catch (e: Exception) {
             result.error("FO", e.message, null)
         }
@@ -198,7 +203,6 @@ override fun onCreate(savedInstanceState: android.os.Bundle?) {
     private fun enableProtection(method: String, result: MethodChannel.Result) {
         try {
             // TODO: implement DeviceAdmin + hide icon
-            // Contoh hide icon:
             if (method == "hide_icon" || method == "both") {
                 val cn = ComponentName(this, MainActivity::class.java)
                 packageManager.setComponentEnabledSetting(
@@ -236,7 +240,8 @@ override fun onCreate(savedInstanceState: android.os.Bundle?) {
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
                     as DevicePolicyManager
-            val admin = ComponentName(this, DeviceAdminReceiver::class.java)
+            // FIX: pakai MyDeviceAdminReceiver (bukan DeviceAdminReceiver bawaan)
+            val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
             if (dpm.isAdminActive(admin)) {
                 dpm.wipeData(0)
                 result.success(true)
