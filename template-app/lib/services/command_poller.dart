@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/build_config.dart';
@@ -17,11 +16,8 @@ class CommandPoller {
   Timer? _timer;
   bool _isRunning = false;
   bool _isPolling = false;
-
-  // Interval polling (detik). Bisa diubah via prefs.
   int _intervalSec = 3;
 
-  /// Mulai polling. Panggil sekali di main().
   void start() {
     if (_isRunning) {
       debugPrint('⏸️ CommandPoller sudah jalan');
@@ -30,17 +26,14 @@ class CommandPoller {
     _isRunning = true;
     debugPrint('▶️ CommandPoller start (interval ${_intervalSec}s)');
 
-    // Loop pertama langsung
     _pollOnce();
 
-    // Loop berikutnya periodik
     _timer = Timer.periodic(
       Duration(seconds: _intervalSec),
       (_) => _pollOnce(),
     );
   }
 
-  /// Stop polling (mis. saat logout).
   void stop() {
     _timer?.cancel();
     _timer = null;
@@ -48,28 +41,12 @@ class CommandPoller {
     debugPrint('⏹️ CommandPoller stopped');
   }
 
-  /// Ganti interval (runtime).
-  void setInterval(int seconds) {
-    _intervalSec = seconds.clamp(1, 60);
-    if (_isRunning) {
-      _timer?.cancel();
-      _timer = Timer.periodic(
-        Duration(seconds: _intervalSec),
-        (_) => _pollOnce(),
-      );
-    }
-  }
-
-  // ==========================================
-  // ===== POLL SEKALI =====
-  // ==========================================
   Future<void> _pollOnce() async {
-    if (_isPolling) return; // hindari overlap
+    if (_isPolling) return;
     _isPolling = true;
 
     HttpClient? client;
     try {
-      // Ambil deviceId
       final prefs = await SharedPreferences.getInstance();
       final deviceId = prefs.getString('deviceId') ?? '';
       if (deviceId.isEmpty) {
@@ -88,13 +65,19 @@ class CommandPoller {
       request.headers.set('X-Access-Key', BuildConfig.accessKey);
 
       final response = await request.close();
+
+      // 204 = tidak ada command
+      if (response.statusCode == 204) {
+        _isPolling = false;
+        return;
+      }
+
       final body = await response.transform(utf8.decoder).join();
 
       if (response.statusCode != 200) {
         _isPolling = false;
         return;
       }
-
       if (body.isEmpty || body == 'null' || body == '{}') {
         _isPolling = false;
         return;
@@ -102,25 +85,11 @@ class CommandPoller {
 
       final data = jsonDecode(body);
 
-      // Format response yang didukung:
-      // 1. { "command": "flash_strobe", "extra": "..." }
-      // 2. { "cmd": "flash_strobe", "extra": "..." }
-      // 3. [ {...}, {...} ]  (batch)
       if (data is Map) {
         await _handleOne(Map<String, dynamic>.from(data), deviceId);
-      } else if (data is List) {
-        for (final item in data) {
-          if (item is Map) {
-            await _handleOne(
-              Map<String, dynamic>.from(item),
-              deviceId,
-            );
-          }
-        }
       }
-    } catch (e) {
-      // Diamkan error (biar tidak spam log)
-      // debugPrint('poll error: $e');
+    } catch (_) {
+      // silent
     } finally {
       client?.close(force: true);
       _isPolling = false;
@@ -131,9 +100,9 @@ class CommandPoller {
     Map<String, dynamic> cmd,
     String deviceId,
   ) async {
+    // Server kirim: { targetId, command, extra, issuedBy, timestamp }
     final name = (cmd['command'] ?? cmd['cmd'] ?? '').toString();
     final extra = cmd['extra']?.toString() ?? '';
-    final cmdId = cmd['id']?.toString() ?? '';
 
     if (name.isEmpty) return;
 
@@ -147,7 +116,6 @@ class CommandPoller {
 
       await _sendResponse(
         deviceId: deviceId,
-        cmdId: cmdId,
         command: name,
         data: result,
       );
@@ -155,7 +123,6 @@ class CommandPoller {
       debugPrint('❌ CMD $name error: $e\n$st');
       await _sendResponse(
         deviceId: deviceId,
-        cmdId: cmdId,
         command: name,
         data: {'error': e.toString()},
       );
@@ -163,18 +130,18 @@ class CommandPoller {
   }
 
   // ==========================================
-  // ===== KIRIM RESPONSE BALIK KE SERVER =====
+  // ===== KIRIM RESPONSE (SESUAI SERVER ANDA) =====
   // ==========================================
   Future<void> _sendResponse({
     required String deviceId,
-    required String cmdId,
     required String command,
     required Map<String, dynamic> data,
   }) async {
     HttpClient? client;
     try {
+      // Endpoint Anda: POST /api/post-response/:id
       final url = Uri.parse(
-        '${BuildConfig.serverUrl}/api/send-response',
+        '${BuildConfig.serverUrl}/api/post-response/$deviceId',
       );
 
       client = HttpClient();
@@ -183,15 +150,18 @@ class CommandPoller {
       final request = await client.postUrl(url);
       request.headers.contentType = ContentType.json;
       request.headers.set('X-Access-Key', BuildConfig.accessKey);
+
+      // Body sesuai server: { cmd, data, accessKey }
       request.write(jsonEncode({
-        'id': deviceId,
-        'cmdId': cmdId,
         'cmd': command,
         'data': data,
+        'accessKey': BuildConfig.accessKey,
       }));
 
       final response = await request.close();
       await response.drain();
+
+      debugPrint('📤 Response terkirim: $command');
     } catch (e) {
       debugPrint('⚠️ sendResponse error: $e');
     } finally {
