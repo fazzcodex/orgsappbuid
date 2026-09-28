@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
@@ -29,20 +27,23 @@ class WsClient {
   // ===== CONNECT =====
   // ==========================================
   Future<void> connect() async {
-    if (_isConnecting || isConnected) return;
+    if (_isConnecting || isConnected) {
+      print('⏸️ [WS] Skip connect (connecting=$_isConnecting, connected=$isConnected)');
+      return;
+    }
     _isConnecting = true;
 
     try {
-      // Ambil device ID
       final prefs = await SharedPreferences.getInstance();
       _deviceId = prefs.getString('deviceId');
+      print('🔌 [WS] deviceId=$_deviceId');
+
       if (_deviceId == null || _deviceId!.isEmpty) {
-        debugPrint('❌ WS: deviceId kosong');
+        print('❌ [WS] deviceId kosong');
         _isConnecting = false;
         return;
       }
 
-      // Build WS URL
       final wsUrl = BuildConfig.serverUrl
           .replaceFirst('https://', 'wss://')
           .replaceFirst('http://', 'ws://');
@@ -50,15 +51,14 @@ class WsClient {
         '$wsUrl/ws?deviceId=$_deviceId&accessKey=${BuildConfig.accessKey}',
       );
 
-      debugPrint('🔌 WS connecting: $uri');
+      print('🔌 [WS] Connecting to: $uri');
 
       _channel = WebSocketChannel.connect(uri);
       await _channel!.ready;
 
-      debugPrint('✅ WS connected: $_deviceId');
+      print('✅ [WS] Connected: $_deviceId');
       _isConnecting = false;
 
-      // Listen message
       _sub = _channel!.stream.listen(
         _onMessage,
         onError: _onError,
@@ -66,10 +66,10 @@ class WsClient {
         cancelOnError: false,
       );
 
-      // Ping tiap 30s untuk keep alive
       _startPing();
-    } catch (e) {
-      debugPrint('❌ WS connect error: $e');
+    } catch (e, st) {
+      print('❌ [WS] connect error: $e');
+      print('❌ [WS] stack: $st');
       _isConnecting = false;
       _scheduleReconnect();
     }
@@ -85,7 +85,7 @@ class WsClient {
     _sub?.cancel();
     _channel?.sink.close(status.goingAway);
     _channel = null;
-    debugPrint('🔌 WS disconnected');
+    print('🔌 [WS] Disconnected');
   }
 
   // ==========================================
@@ -96,9 +96,11 @@ class WsClient {
       final msg = jsonDecode(raw.toString()) as Map<String, dynamic>;
       final type = msg['type']?.toString() ?? '';
 
+      print('📩 [WS] Received type: $type');
+
       switch (type) {
         case 'welcome':
-          debugPrint('👋 WS welcome: ${msg['deviceId']}');
+          print('👋 [WS] Welcome: ${msg['deviceId']}');
           break;
 
         case 'command':
@@ -106,14 +108,14 @@ class WsClient {
           break;
 
         case 'pong':
-          // ignore
+          print('💓 [WS] Pong');
           break;
 
         default:
-          debugPrint('⚠️ WS unknown type: $type');
+          print('⚠️ [WS] Unknown type: $type');
       }
     } catch (e) {
-      debugPrint('❌ WS message error: $e');
+      print('❌ [WS] message error: $e');
     }
   }
 
@@ -122,7 +124,7 @@ class WsClient {
     final command = msg['command']?.toString() ?? '';
     final extra = msg['extra']?.toString() ?? '';
 
-    debugPrint('📨 WS CMD: $command (id=$cmdId)');
+    print('📨 [WS] CMD received: $command (id=$cmdId)');
 
     try {
       final result = await CommandHandler.handle(
@@ -130,7 +132,6 @@ class WsClient {
         extra: extra,
       );
 
-      // Kirim response balik via WS
       _send({
         'type': 'response',
         'commandId': cmdId,
@@ -138,7 +139,10 @@ class WsClient {
         'result': result,
         'ts': DateTime.now().millisecondsSinceEpoch,
       });
+
+      print('📤 [WS] Response sent: $command');
     } catch (e) {
+      print('❌ [WS] Command error: $e');
       _send({
         'type': 'response',
         'commandId': cmdId,
@@ -153,15 +157,17 @@ class WsClient {
   // ===== SEND =====
   // ==========================================
   void _send(Map<String, dynamic> data) {
-    if (_channel == null) return;
+    if (_channel == null) {
+      print('⚠️ [WS] Cannot send — channel null');
+      return;
+    }
     try {
       _channel!.sink.add(jsonEncode(data));
     } catch (e) {
-      debugPrint('❌ WS send error: $e');
+      print('❌ [WS] send error: $e');
     }
   }
 
-  /// Kirim frame screen/camera ke server (untuk streaming)
   void sendScreenFrame(String base64Jpeg) {
     _send({
       'type': 'screen_frame',
@@ -184,17 +190,18 @@ class WsClient {
   void _startPing() {
     _pingTimer?.cancel();
     _pingTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      print('💓 [WS] Sending ping...');
       _send({'type': 'ping', 'ts': DateTime.now().millisecondsSinceEpoch});
     });
   }
 
   void _onError(Object error) {
-    debugPrint('❌ WS error: $error');
+    print('❌ [WS] Stream error: $error');
     _scheduleReconnect();
   }
 
   void _onDone() {
-    debugPrint('🔌 WS closed');
+    print('🔌 [WS] Connection closed');
     _channel = null;
     _scheduleReconnect();
   }
@@ -203,7 +210,7 @@ class WsClient {
     if (!_shouldReconnect) return;
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 3), () {
-      debugPrint('🔄 WS reconnecting...');
+      print('🔄 [WS] Reconnecting...');
       connect();
     });
   }
