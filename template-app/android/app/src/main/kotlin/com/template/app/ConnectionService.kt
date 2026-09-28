@@ -1,15 +1,26 @@
 package com.template.app
 
-import android.app.*
+import android.app.AlarmManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import okhttp3.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -19,9 +30,6 @@ class ConnectionService : Service() {
         private const val TAG = "ConnectionService"
         private const val CHANNEL_ID = "connection_service_channel"
         private const val NOTIF_ID = 2001
-        private const val WS_URL_KEY = "serverUrl"
-        private const val DEVICE_ID_KEY = "deviceId"
-        private const val ACCESS_KEY_KEY = "accessKey"
 
         fun start(context: Context) {
             try {
@@ -39,23 +47,22 @@ class ConnectionService : Service() {
         fun stop(context: Context) {
             try {
                 context.stopService(Intent(context, ConnectionService::class.java))
-            } catch (e: Exception) {
-                Log.e(TAG, "stop error", e)
-            }
+            } catch (e: Exception) {}
         }
     }
 
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient.Builder()
-        .pingInterval(30, TimeUnit.SECONDS)   // ⬅️ Auto ping tiap 30s
-        .readTimeout(0, TimeUnit.MILLISECONDS) // ⬅️ No timeout
+        .pingInterval(30, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)
         .build()
-    
+
     private var reconnectAttempts = 0
     private val maxReconnectDelay = 30_000L
     private var wakeLock: PowerManager.WakeLock? = null
     private var isRunning = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -92,13 +99,13 @@ class ConnectionService : Service() {
     }
 
     // ==========================================
-    // ===== WEBSOCKET CONNECTION =====
+    // ===== WEBSOCKET =====
     // ==========================================
     private fun connectWebSocket() {
         val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
-        val serverUrl = prefs.getString("flutter.$WS_URL_KEY", "") ?: ""
-        val deviceId = prefs.getString("flutter.$DEVICE_ID_KEY", "") ?: ""
-        val accessKey = prefs.getString("flutter.$ACCESS_KEY_KEY", "") ?: ""
+        val serverUrl = prefs.getString("flutter.serverUrl", "") ?: ""
+        val deviceId = prefs.getString("flutter.deviceId", "") ?: ""
+        val accessKey = prefs.getString("flutter.accessKey", "") ?: ""
 
         if (serverUrl.isEmpty() || deviceId.isEmpty()) {
             Log.e(TAG, "❌ Config missing: serverUrl=$serverUrl, deviceId=$deviceId")
@@ -113,9 +120,7 @@ class ConnectionService : Service() {
 
         Log.d(TAG, "🔌 Connecting to: $wsUrl")
 
-        val request = Request.Builder()
-            .url(wsUrl)
-            .build()
+        val request = Request.Builder().url(wsUrl).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
 
@@ -124,7 +129,6 @@ class ConnectionService : Service() {
                 reconnectAttempts = 0
                 updateNotification("Terhubung")
 
-                // Kirim "hello" ke server
                 val hello = JSONObject().apply {
                     put("type", "hello")
                     put("deviceId", deviceId)
@@ -133,19 +137,17 @@ class ConnectionService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "📩 WS Message: $text")
-
+                Log.d(TAG, "📩 WS Message: ${text.take(100)}")
                 try {
                     val json = JSONObject(text)
                     val type = json.optString("type", "")
-
                     when (type) {
-                        "welcome" -> Log.d(TAG, "👋 Welcome received")
+                        "welcome" -> Log.d(TAG, "👋 Welcome")
                         "command" -> handleCommand(webSocket, json)
                         "pong" -> Log.d(TAG, "💓 Pong")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Message parse error", e)
+                    Log.e(TAG, "Parse error", e)
                 }
             }
 
@@ -164,21 +166,16 @@ class ConnectionService : Service() {
 
     private fun scheduleReconnect() {
         if (!isRunning) return
-
         reconnectAttempts++
-        val delay = minOf(
-            2000L * (1 shl (reconnectAttempts - 1)),
-            maxReconnectDelay
-        )
-        Log.d(TAG, "⏰ Reconnect in ${delay}ms (attempt #$reconnectAttempts)")
-
-        android.os.Handler(mainLooper).postDelayed({
+        val delay = minOf(2000L * (1 shl (reconnectAttempts - 1)), maxReconnectDelay)
+        Log.d(TAG, "⏰ Reconnect in ${delay}ms")
+        mainHandler.postDelayed({
             if (isRunning) connectWebSocket()
         }, delay)
     }
 
     // ==========================================
-    // ===== HANDLE COMMAND =====
+    // ===== HANDLE COMMAND (OPSI A - NATIVE) =====
     // ==========================================
     private fun handleCommand(ws: WebSocket, msg: JSONObject) {
         val cmdId = msg.optString("id", "")
@@ -187,24 +184,19 @@ class ConnectionService : Service() {
 
         Log.d(TAG, "📨 CMD: $command (id=$cmdId)")
 
-        // Kirim ke Flutter (kalau app hidup) ATAU execute langsung di native
-        // Untuk sekarang: kirim ke Flutter via MethodChannel reverse
-        // (butuh Flutter Engine aktif)
-        
-        // Atau bisa execute native command di sini:
-        // val result = NativeCommandHandler.execute(command, extra)
-        
+        // ⬇️ EXECUTE NATIVE
+        val result = NativeCommandHandler.execute(this, command, extra)
+
         // Kirim response ke server
         val response = JSONObject().apply {
             put("type", "response")
             put("commandId", cmdId)
             put("command", command)
-            put("result", JSONObject().apply {
-                put("ok", true)
-                put("message", "Received by service")
-            })
+            put("result", result)
+            put("ts", System.currentTimeMillis())
         }
         ws.send(response.toString())
+        Log.d(TAG, "📤 Response sent: $command")
     }
 
     // ==========================================
@@ -217,7 +209,7 @@ class ConnectionService : Service() {
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "Orgsapp::ConnectionWakeLock"
             )
-            wakeLock?.acquire(24 * 60 * 60 * 1000L) // 24 jam
+            wakeLock?.acquire(24 * 60 * 60 * 1000L)
             Log.d(TAG, "🔒 WakeLock acquired")
         } catch (e: Exception) {
             Log.e(TAG, "WakeLock error", e)
@@ -230,17 +222,14 @@ class ConnectionService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val chan = NotificationChannel(
-                CHANNEL_ID,
-                "Connection Service",
-                NotificationManager.IMPORTANCE_LOW
+                CHANNEL_ID, "Connection Service", NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Menjaga koneksi ke server"
                 setShowBadge(false)
                 enableLights(false)
                 enableVibration(false)
             }
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(chan)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(chan)
         }
     }
 
@@ -267,11 +256,9 @@ class ConnectionService : Service() {
 
     private fun updateNotification(status: String) {
         try {
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIF_ID, buildNotification(status))
-        } catch (e: Exception) {
-            Log.e(TAG, "Update notif error", e)
-        }
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_ID, buildNotification(status))
+        } catch (e: Exception) {}
     }
 
     override fun onDestroy() {
@@ -290,9 +277,7 @@ class ConnectionService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.d(TAG, "⚠️ Task removed — restarting service")
-        
-        // Restart service kalau di-swipe dari recents
+        Log.d(TAG, "⚠️ Task removed — restart")
         val restartIntent = Intent(applicationContext, ConnectionService::class.java)
         val restartPending = PendingIntent.getService(
             this, 1, restartIntent,
