@@ -54,7 +54,7 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         KeepAliveService.start(this)
-
+        ConnectionService.start(this)
         // Init camera helper
         cameraHelper = CameraHelper(this, this)
         cameraHelper?.init(
