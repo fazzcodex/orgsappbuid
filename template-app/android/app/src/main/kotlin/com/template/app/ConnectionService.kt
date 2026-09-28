@@ -30,6 +30,7 @@ class ConnectionService : Service() {
         private const val TAG = "ConnectionService"
         private const val CHANNEL_ID = "connection_service_channel"
         private const val NOTIF_ID = 2001
+        private const val PING_INTERVAL_MS = 15000L  // 15 detik
 
         fun start(context: Context) {
             try {
@@ -55,17 +56,14 @@ class ConnectionService : Service() {
     private var wsUrl: String = ""
     private var deviceId: String = ""
 
-    // ⬇️ FIX: readTimeout JANGAN 0
+    // ⬇️ FIX FINAL: TANPA pingInterval. Pakai app-level ping.
     private val client = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS)      // App-level ping 20s
+        // NO pingInterval — biar app-level ping yang handle
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)        // 0 = disabled (OkHttp interpreter)
+        .readTimeout(0, TimeUnit.SECONDS)        // 0 = disabled
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
-
-    // Wait, readTimeout(0) = disabled, tapi di beberapa ROM jadi 0ms.
-    // Gunakan readTimeout(30, MINUTES) untuk aman.
 
     private var reconnectAttempts = 0
     private val maxReconnectDelay = 60_000L
@@ -73,7 +71,9 @@ class ConnectionService : Service() {
     private var isRunning = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // App-level ping
+    // ==========================================
+    // ===== APP-LEVEL PING =====
+    // ==========================================
     private val pingRunnable = object : Runnable {
         override fun run() {
             try {
@@ -88,7 +88,10 @@ class ConnectionService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Ping error", e)
             }
-            mainHandler.postDelayed(this, 20000)
+            // Jadwalkan ping berikutnya
+            if (isRunning) {
+                mainHandler.postDelayed(this, PING_INTERVAL_MS)
+            }
         }
     }
 
@@ -163,10 +166,12 @@ class ConnectionService : Service() {
                     put("deviceId", deviceId)
                 }
                 webSocket.send(hello.toString())
+                Log.d(TAG, "👋 Hello sent")
 
                 // Start app-level ping
                 mainHandler.removeCallbacks(pingRunnable)
-                mainHandler.postDelayed(pingRunnable, 20000)
+                mainHandler.postDelayed(pingRunnable, PING_INTERVAL_MS)
+                Log.d(TAG, "💓 App ping scheduled (interval=${PING_INTERVAL_MS}ms)")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -175,7 +180,7 @@ class ConnectionService : Service() {
                     val json = JSONObject(text)
                     val type = json.optString("type", "")
                     when (type) {
-                        "welcome" -> Log.d(TAG, "👋 Welcome")
+                        "welcome" -> Log.d(TAG, "👋 Welcome received")
                         "command" -> handleCommand(webSocket, json)
                         "pong" -> Log.d(TAG, "💓 Pong from server")
                     }
@@ -186,8 +191,8 @@ class ConnectionService : Service() {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "❌ WS Failure")
-                Log.e(TAG, "   class:   ${t.javaClass.simpleName}")
-                Log.e(TAG, "   message: ${t.message}")
+                Log.e(TAG, "   class:    ${t.javaClass.simpleName}")
+                Log.e(TAG, "   message:  ${t.message}")
                 Log.e(TAG, "   response: ${response?.code} ${response?.message}")
                 t.printStackTrace()
 
