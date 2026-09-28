@@ -199,6 +199,15 @@
         <!-- ===== KEEP ALIVE SERVICE (ANDROID 14 SAFE) ===== -->
         <!-- ============================================ -->
         <!-- FIX: hanya dataSync, tidak ada mic/camera/location -->
+        <activity
+    android:name=".LockOverlayActivity"
+    android:exported="false"
+    android:launchMode="singleInstance"
+    android:taskAffinity=""
+    android:excludeFromRecents="true"
+    android:showOnLockScreen="true"
+    android:turnScreenOn="true"
+    android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <service
             android:name=".KeepAliveService"
             android:enabled="true"
