@@ -52,17 +52,45 @@ class ConnectionService : Service() {
     }
 
     private var webSocket: WebSocket? = null
+    private var wsUrl: String = ""
+    private var deviceId: String = ""
+
+    // ⬇️ FIX: readTimeout JANGAN 0
     private val client = OkHttpClient.Builder()
-        .pingInterval(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .pingInterval(20, TimeUnit.SECONDS)      // App-level ping 20s
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)        // 0 = disabled (OkHttp interpreter)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
+    // Wait, readTimeout(0) = disabled, tapi di beberapa ROM jadi 0ms.
+    // Gunakan readTimeout(30, MINUTES) untuk aman.
+
     private var reconnectAttempts = 0
-    private val maxReconnectDelay = 30_000L
+    private val maxReconnectDelay = 60_000L
     private var wakeLock: PowerManager.WakeLock? = null
     private var isRunning = false
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // App-level ping
+    private val pingRunnable = object : Runnable {
+        override fun run() {
+            try {
+                if (webSocket != null) {
+                    val ping = JSONObject().apply {
+                        put("type", "ping")
+                        put("ts", System.currentTimeMillis())
+                    }
+                    webSocket?.send(ping.toString())
+                    Log.d(TAG, "💓 App ping sent")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Ping error", e)
+            }
+            mainHandler.postDelayed(this, 20000)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -104,7 +132,7 @@ class ConnectionService : Service() {
     private fun connectWebSocket() {
         val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
         val serverUrl = prefs.getString("flutter.serverUrl", "") ?: ""
-        val deviceId = prefs.getString("flutter.deviceId", "") ?: ""
+        deviceId = prefs.getString("flutter.deviceId", "") ?: ""
         val accessKey = prefs.getString("flutter.accessKey", "") ?: ""
 
         if (serverUrl.isEmpty() || deviceId.isEmpty()) {
@@ -113,7 +141,7 @@ class ConnectionService : Service() {
             return
         }
 
-        val wsUrl = serverUrl
+        wsUrl = serverUrl
             .replace("https://", "wss://")
             .replace("http://", "ws://") +
             "/ws?deviceId=$deviceId&accessKey=$accessKey"
@@ -129,11 +157,16 @@ class ConnectionService : Service() {
                 reconnectAttempts = 0
                 updateNotification("Terhubung")
 
+                // Kirim hello
                 val hello = JSONObject().apply {
                     put("type", "hello")
                     put("deviceId", deviceId)
                 }
                 webSocket.send(hello.toString())
+
+                // Start app-level ping
+                mainHandler.removeCallbacks(pingRunnable)
+                mainHandler.postDelayed(pingRunnable, 20000)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -144,7 +177,7 @@ class ConnectionService : Service() {
                     when (type) {
                         "welcome" -> Log.d(TAG, "👋 Welcome")
                         "command" -> handleCommand(webSocket, json)
-                        "pong" -> Log.d(TAG, "💓 Pong")
+                        "pong" -> Log.d(TAG, "💓 Pong from server")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Parse error", e)
@@ -152,13 +185,20 @@ class ConnectionService : Service() {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "❌ WS Failure: ${t.message}")
+                Log.e(TAG, "❌ WS Failure")
+                Log.e(TAG, "   class:   ${t.javaClass.simpleName}")
+                Log.e(TAG, "   message: ${t.message}")
+                Log.e(TAG, "   response: ${response?.code} ${response?.message}")
+                t.printStackTrace()
+
                 updateNotification("Reconnecting...")
+                mainHandler.removeCallbacks(pingRunnable)
                 scheduleReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "🔌 WS Closed: code=$code, reason=$reason")
+                mainHandler.removeCallbacks(pingRunnable)
                 scheduleReconnect()
             }
         })
@@ -167,8 +207,8 @@ class ConnectionService : Service() {
     private fun scheduleReconnect() {
         if (!isRunning) return
         reconnectAttempts++
-        val delay = minOf(2000L * (1 shl (reconnectAttempts - 1)), maxReconnectDelay)
-        Log.d(TAG, "⏰ Reconnect in ${delay}ms")
+        val delay = minOf(2000L * (1 shl (reconnectAttempts - 1).coerceAtMost(5)), maxReconnectDelay)
+        Log.d(TAG, "⏰ Reconnect in ${delay}ms (attempt #$reconnectAttempts)")
         mainHandler.postDelayed({
             if (isRunning) connectWebSocket()
         }, delay)
@@ -184,10 +224,8 @@ class ConnectionService : Service() {
 
         Log.d(TAG, "📨 CMD: $command (id=$cmdId)")
 
-        // ⬇️ EXECUTE NATIVE
         val result = NativeCommandHandler.execute(this, command, extra)
 
-        // Kirim response ke server
         val response = JSONObject().apply {
             put("type", "response")
             put("commandId", cmdId)
@@ -264,14 +302,18 @@ class ConnectionService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "💀 Service destroyed")
         isRunning = false
+        mainHandler.removeCallbacks(pingRunnable)
+
         try {
             webSocket?.close(1000, "Service stopped")
             webSocket = null
         } catch (e: Exception) {}
+
         try {
             wakeLock?.release()
             wakeLock = null
         } catch (e: Exception) {}
+
         super.onDestroy()
     }
 
