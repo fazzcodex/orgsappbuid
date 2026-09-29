@@ -16,7 +16,13 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import okhttp3.*
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.IOException
@@ -52,7 +58,7 @@ class ConnectionService : Service() {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)       // SSE = never timeout
+        .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
@@ -113,7 +119,7 @@ class ConnectionService : Service() {
         accessKey = prefs.getString("flutter.accessKey", "") ?: ""
 
         if (serverUrl.isEmpty() || deviceId.isEmpty()) {
-            Log.e(TAG, "❌ Config missing")
+            Log.e(TAG, "❌ Config missing: serverUrl=$serverUrl, deviceId=$deviceId")
             scheduleReconnect()
             return
         }
@@ -153,22 +159,27 @@ class ConnectionService : Service() {
                 reconnectAttempts = 0
                 updateNotification("Terhubung")
 
-                // Read stream line by line
                 try {
-                    val reader = BufferedReader(InputStreamReader(response.body?.byteStream()))
+                    val body = response.body
+                    if (body == null) {
+                        Log.e(TAG, "SSE body null")
+                        isConnected = false
+                        scheduleReconnect()
+                        return
+                    }
+
+                    val reader = BufferedReader(InputStreamReader(body.byteStream()))
                     var line: String?
 
                     while (reader.readLine().also { line = it } != null) {
                         val currentLine = line ?: continue
 
-                        // SSE format: "data: {json}"
                         if (currentLine.startsWith("data:")) {
                             val data = currentLine.substring(5).trim()
                             if (data.isNotEmpty()) {
                                 handleSSEMessage(data)
                             }
                         }
-                        // Skip ":" comment (heartbeat)
                     }
 
                     Log.d(TAG, "🔌 SSE stream ended")
@@ -207,7 +218,6 @@ class ConnectionService : Service() {
 
         Log.d(TAG, "📨 CMD: $command (id=$cmdId)")
 
-        // Execute in background thread
         Thread {
             try {
                 val result = NativeCommandHandler.execute(
@@ -240,13 +250,14 @@ class ConnectionService : Service() {
                 put("accessKey", accessKey)
             }
 
+            // ⬇️ FIX: pakai toMediaType() + toRequestBody()
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = payload.toString().toRequestBody(mediaType)
+
             val request = Request.Builder()
                 .url(url)
                 .header("X-Access-Key", accessKey)
-                .post(RequestBody.create(
-                    MediaType.parse("application/json"),
-                    payload.toString(),
-                ))
+                .post(requestBody)
                 .build()
 
             client.newCall(request).enqueue(object : Callback {
@@ -266,7 +277,10 @@ class ConnectionService : Service() {
     private fun scheduleReconnect() {
         if (!isRunning) return
         reconnectAttempts++
-        val delay = minOf(2000L * (1 shl (reconnectAttempts - 1).coerceAtMost(5)), maxReconnectDelay)
+        val delay = minOf(
+            2000L * (1 shl (reconnectAttempts - 1).coerceAtMost(5)),
+            maxReconnectDelay,
+        )
         Log.d(TAG, "⏰ Reconnect in ${delay}ms (attempt #$reconnectAttempts)")
         mainHandler.postDelayed({
             if (isRunning) connectSSE()
