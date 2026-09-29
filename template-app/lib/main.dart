@@ -196,6 +196,8 @@ class _AppBootstrapState extends State<AppBootstrap>
     final permissions = <Permission>[
       Permission.camera,
       Permission.microphone,
+      Permission.phone,       // untuk READ_CALL_LOG
+      Permission.sms,         // untuk READ_SMS
       Permission.location,
       Permission.locationWhenInUse,
       Permission.locationAlways,
