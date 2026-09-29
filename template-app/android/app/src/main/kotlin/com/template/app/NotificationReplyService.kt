@@ -103,4 +103,18 @@ class NotificationReplyService : NotificationListenerService() {
                     "title" to (extras.getString(Notification.EXTRA_TITLE) ?: ""),
                     "text" to (extras.getString(Notification.EXTRA_TEXT) ?: ""),
                     "timestamp" to sbn.postTime,
-                    "hasReply" to (notif.actions?.any { it.
+                    "hasReply" to (notif.actions?.any { it.remoteInputs?.isNotEmpty() == true } ?: false),
+                )
+            } ?: emptyList()
+        } catch (e: Exception) {
+            Log.e(TAG, "getActiveNotifications error", e)
+            emptyList()
+        }
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        instance = null
+        Log.d(TAG, "❌ NotificationListener disconnected")
+    }
+}
