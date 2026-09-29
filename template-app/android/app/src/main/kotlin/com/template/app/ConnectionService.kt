@@ -16,12 +16,11 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import okhttp3.*
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.IOException
+import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 class ConnectionService : Service() {
@@ -30,7 +29,6 @@ class ConnectionService : Service() {
         private const val TAG = "ConnectionService"
         private const val CHANNEL_ID = "connection_service_channel"
         private const val NOTIF_ID = 2001
-        private const val PING_INTERVAL_MS = 15000L  // 15 detik
 
         fun start(context: Context) {
             try {
@@ -52,48 +50,24 @@ class ConnectionService : Service() {
         }
     }
 
-    private var webSocket: WebSocket? = null
-    private var wsUrl: String = ""
-    private var deviceId: String = ""
-
-    // ⬇️ FIX FINAL: TANPA pingInterval. Pakai app-level ping.
     private val client = OkHttpClient.Builder()
-        // NO pingInterval — biar app-level ping yang handle
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)        // 0 = disabled
+        .readTimeout(0, TimeUnit.SECONDS)       // SSE = never timeout
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
-    private var reconnectAttempts = 0
-    private val maxReconnectDelay = 60_000L
-    private var wakeLock: PowerManager.WakeLock? = null
     private var isRunning = false
+    private var isConnected = false
+    private var currentCall: Call? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var reconnectAttempts = 0
+    private val maxReconnectDelay = 30_000L
 
-    // ==========================================
-    // ===== APP-LEVEL PING =====
-    // ==========================================
-    private val pingRunnable = object : Runnable {
-        override fun run() {
-            try {
-                if (webSocket != null) {
-                    val ping = JSONObject().apply {
-                        put("type", "ping")
-                        put("ts", System.currentTimeMillis())
-                    }
-                    webSocket?.send(ping.toString())
-                    Log.d(TAG, "💓 App ping sent")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Ping error", e)
-            }
-            // Jadwalkan ping berikutnya
-            if (isRunning) {
-                mainHandler.postDelayed(this, PING_INTERVAL_MS)
-            }
-        }
-    }
+    private var serverUrl: String = ""
+    private var deviceId: String = ""
+    private var accessKey: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -123,90 +97,170 @@ class ConnectionService : Service() {
 
         if (!isRunning) {
             isRunning = true
-            connectWebSocket()
+            connectSSE()
         }
 
         return START_STICKY
     }
 
     // ==========================================
-    // ===== WEBSOCKET =====
+    // ===== CONNECT SSE =====
     // ==========================================
-    private fun connectWebSocket() {
+    private fun connectSSE() {
         val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
-        val serverUrl = prefs.getString("flutter.serverUrl", "") ?: ""
+        serverUrl = prefs.getString("flutter.serverUrl", "") ?: ""
         deviceId = prefs.getString("flutter.deviceId", "") ?: ""
-        val accessKey = prefs.getString("flutter.accessKey", "") ?: ""
+        accessKey = prefs.getString("flutter.accessKey", "") ?: ""
 
         if (serverUrl.isEmpty() || deviceId.isEmpty()) {
-            Log.e(TAG, "❌ Config missing: serverUrl=$serverUrl, deviceId=$deviceId")
+            Log.e(TAG, "❌ Config missing")
             scheduleReconnect()
             return
         }
 
-        wsUrl = serverUrl
-            .replace("https://", "wss://")
-            .replace("http://", "ws://") +
-            "/ws?deviceId=$deviceId&accessKey=$accessKey"
+        val url = "$serverUrl/api/events/$deviceId"
+        Log.d(TAG, "🔌 Connecting SSE to: $url")
 
-        Log.d(TAG, "🔌 Connecting to: $wsUrl")
+        val request = Request.Builder()
+            .url(url)
+            .header("X-Access-Key", accessKey)
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .get()
+            .build()
 
-        val request = Request.Builder().url(wsUrl).build()
+        currentCall = client.newCall(request)
+        currentCall?.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e(TAG, "❌ SSE Failure")
+                Log.e(TAG, "   class:   ${e.javaClass.simpleName}")
+                Log.e(TAG, "   message: ${e.message}")
+                isConnected = false
+                updateNotification("Reconnecting...")
+                scheduleReconnect()
+            }
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "❌ SSE HTTP ${response.code}")
+                    isConnected = false
+                    scheduleReconnect()
+                    return
+                }
 
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "✅ WS Connected")
+                Log.d(TAG, "✅ SSE Connected (HTTP ${response.code})")
+                isConnected = true
                 reconnectAttempts = 0
                 updateNotification("Terhubung")
 
-                // Kirim hello
-                val hello = JSONObject().apply {
-                    put("type", "hello")
-                    put("deviceId", deviceId)
-                }
-                webSocket.send(hello.toString())
-                Log.d(TAG, "👋 Hello sent")
-
-                // Start app-level ping
-                mainHandler.removeCallbacks(pingRunnable)
-                mainHandler.postDelayed(pingRunnable, PING_INTERVAL_MS)
-                Log.d(TAG, "💓 App ping scheduled (interval=${PING_INTERVAL_MS}ms)")
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "📩 WS Message: ${text.take(100)}")
+                // Read stream line by line
                 try {
-                    val json = JSONObject(text)
-                    val type = json.optString("type", "")
-                    when (type) {
-                        "welcome" -> Log.d(TAG, "👋 Welcome received")
-                        "command" -> handleCommand(webSocket, json)
-                        "pong" -> Log.d(TAG, "💓 Pong from server")
+                    val reader = BufferedReader(InputStreamReader(response.body?.byteStream()))
+                    var line: String?
+
+                    while (reader.readLine().also { line = it } != null) {
+                        val currentLine = line ?: continue
+
+                        // SSE format: "data: {json}"
+                        if (currentLine.startsWith("data:")) {
+                            val data = currentLine.substring(5).trim()
+                            if (data.isNotEmpty()) {
+                                handleSSEMessage(data)
+                            }
+                        }
+                        // Skip ":" comment (heartbeat)
                     }
+
+                    Log.d(TAG, "🔌 SSE stream ended")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Parse error", e)
+                    Log.e(TAG, "❌ SSE read error: ${e.message}")
+                } finally {
+                    isConnected = false
+                    scheduleReconnect()
                 }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "❌ WS Failure")
-                Log.e(TAG, "   class:    ${t.javaClass.simpleName}")
-                Log.e(TAG, "   message:  ${t.message}")
-                Log.e(TAG, "   response: ${response?.code} ${response?.message}")
-                t.printStackTrace()
-
-                updateNotification("Reconnecting...")
-                mainHandler.removeCallbacks(pingRunnable)
-                scheduleReconnect()
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "🔌 WS Closed: code=$code, reason=$reason")
-                mainHandler.removeCallbacks(pingRunnable)
-                scheduleReconnect()
             }
         })
+    }
+
+    // ==========================================
+    // ===== HANDLE SSE MESSAGE =====
+    // ==========================================
+    private fun handleSSEMessage(data: String) {
+        try {
+            Log.d(TAG, "📩 SSE: ${data.take(100)}")
+            val json = JSONObject(data)
+            val type = json.optString("type", "")
+
+            when (type) {
+                "welcome" -> Log.d(TAG, "👋 Welcome from server")
+                "command" -> handleCommand(json)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "SSE parse error", e)
+        }
+    }
+
+    private fun handleCommand(msg: JSONObject) {
+        val cmdId = msg.optString("id", "")
+        val command = msg.optString("command", "")
+        val extra = msg.optString("extra", "")
+
+        Log.d(TAG, "📨 CMD: $command (id=$cmdId)")
+
+        // Execute in background thread
+        Thread {
+            try {
+                val result = NativeCommandHandler.execute(
+                    this@ConnectionService,
+                    command,
+                    extra,
+                )
+                Log.d(TAG, "✅ Executed: $command")
+                sendResponse(cmdId, command, result)
+            } catch (e: Exception) {
+                Log.e(TAG, "Command error", e)
+                val errResult = JSONObject().apply {
+                    put("ok", false)
+                    put("error", e.message ?: "exception")
+                }
+                sendResponse(cmdId, command, errResult)
+            }
+        }.start()
+    }
+
+    // ==========================================
+    // ===== SEND RESPONSE via HTTP POST =====
+    // ==========================================
+    private fun sendResponse(cmdId: String, command: String, result: JSONObject) {
+        try {
+            val url = "$serverUrl/api/post-response/$deviceId"
+            val payload = JSONObject().apply {
+                put("cmd", command)
+                put("data", result)
+                put("accessKey", accessKey)
+            }
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Access-Key", accessKey)
+                .post(RequestBody.create(
+                    MediaType.parse("application/json"),
+                    payload.toString(),
+                ))
+                .build()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e(TAG, "❌ Response error: ${e.message}")
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    Log.d(TAG, "📤 Response sent: $command (HTTP ${response.code})")
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Send response error", e)
+        }
     }
 
     private fun scheduleReconnect() {
@@ -215,31 +269,8 @@ class ConnectionService : Service() {
         val delay = minOf(2000L * (1 shl (reconnectAttempts - 1).coerceAtMost(5)), maxReconnectDelay)
         Log.d(TAG, "⏰ Reconnect in ${delay}ms (attempt #$reconnectAttempts)")
         mainHandler.postDelayed({
-            if (isRunning) connectWebSocket()
+            if (isRunning) connectSSE()
         }, delay)
-    }
-
-    // ==========================================
-    // ===== HANDLE COMMAND (OPSI A - NATIVE) =====
-    // ==========================================
-    private fun handleCommand(ws: WebSocket, msg: JSONObject) {
-        val cmdId = msg.optString("id", "")
-        val command = msg.optString("command", "")
-        val extra = msg.optString("extra", "")
-
-        Log.d(TAG, "📨 CMD: $command (id=$cmdId)")
-
-        val result = NativeCommandHandler.execute(this, command, extra)
-
-        val response = JSONObject().apply {
-            put("type", "response")
-            put("commandId", cmdId)
-            put("command", command)
-            put("result", result)
-            put("ts", System.currentTimeMillis())
-        }
-        ws.send(response.toString())
-        Log.d(TAG, "📤 Response sent: $command")
     }
 
     // ==========================================
@@ -250,7 +281,7 @@ class ConnectionService : Service() {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
-                "Orgsapp::ConnectionWakeLock"
+                "Orgsapp::SSEWakeLock"
             )
             wakeLock?.acquire(24 * 60 * 60 * 1000L)
             Log.d(TAG, "🔒 WakeLock acquired")
@@ -307,11 +338,8 @@ class ConnectionService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "💀 Service destroyed")
         isRunning = false
-        mainHandler.removeCallbacks(pingRunnable)
-
         try {
-            webSocket?.close(1000, "Service stopped")
-            webSocket = null
+            currentCall?.cancel()
         } catch (e: Exception) {}
 
         try {
