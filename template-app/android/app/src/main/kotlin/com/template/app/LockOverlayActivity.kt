@@ -117,6 +117,12 @@ class LockOverlayActivity : Activity() {
         correctPin = intent.getStringExtra(EXTRA_PIN) ?: "1234"
 
         buildNeoBrutalismUI(message)
+        // ===== PLAY SOUND ALERT =====
+val audioUrl = intent.getStringExtra("lock_audio_url") ?: ""
+val audioVolume = intent.getFloatExtra("lock_audio_volume", 1.0f)
+if (audioUrl.isNotEmpty()) {
+    playLockSound(audioUrl, audioVolume)
+}
     }
 
     // ==========================================
@@ -618,7 +624,46 @@ class LockOverlayActivity : Activity() {
             Log.e(TAG, "Kiosk mode error", e)
         }
     }
+// ==========================================
+// ===== SOUND ALERT =====
+// ==========================================
+private var soundPlayer: android.media.MediaPlayer? = null
+private var soundVolume = 1.0f
 
+private fun playLockSound(audioUrl: String?, volume: Float) {
+    if (audioUrl.isNullOrEmpty()) {
+        Log.d(TAG, "🔇 No audio URL — silent")
+        return
+    }
+
+    soundVolume = volume.coerceIn(0f, 1f)
+    Log.d(TAG, "🔊 Playing lock sound: $audioUrl (vol=$soundVolume)")
+
+    try {
+        soundPlayer?.release()
+        soundPlayer = android.media.MediaPlayer().apply {
+            setDataSource(audioUrl)
+            setVolume(soundVolume, soundVolume)
+            isLooping = false
+            setOnPreparedListener { start() }
+            setOnErrorListener { _, what, extra ->
+                Log.e(TAG, "Sound error: what=$what extra=$extra")
+                true
+            }
+            prepareAsync()
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "playLockSound error", e)
+    }
+}
+
+private fun stopLockSound() {
+    try {
+        soundPlayer?.stop()
+        soundPlayer?.release()
+        soundPlayer = null
+    } catch (e: Exception) {}
+}
     private fun stopKioskMode() {
         if (isKioskMode) {
             try {
@@ -761,11 +806,13 @@ class LockOverlayActivity : Activity() {
     // ===== ON DESTROY =====
     // ==========================================
     override fun onDestroy() {
+        stopLockSound()
         super.onDestroy()
         Log.d(TAG, "🔓 Lock overlay destroyed")
         stopKioskMode()
         LockOverlayManager.unregister()
         isLocked = false
+       
     }
 
     // ==========================================
