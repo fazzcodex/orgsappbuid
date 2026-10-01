@@ -1,6 +1,8 @@
 package com.template.app
 
 import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjection
 import android.util.Log
 import org.json.JSONObject
 import org.webrtc.*
@@ -22,7 +24,6 @@ object WebRTCService {
     private var eglBase: EglBase? = null
 
     private var isStreaming = false
-    private var currentFacing = CameraVideoCapturer.CameraSwitchHandler ?: null
     private var useFrontCamera = false
 
     // Callback ke server
@@ -128,7 +129,8 @@ object WebRTCService {
 
             val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
                 sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+                continualGatheringPolicy =
+                    PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             }
 
             peerConnection = peerConnectionFactory!!.createPeerConnection(
@@ -176,7 +178,11 @@ object WebRTCService {
                         Log.d(TAG, "Renegotiation needed")
                     }
 
-                    override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
+                    override fun onAddTrack(
+                        receiver: RtpReceiver?,
+                        streams: Array<out MediaStream>?,
+                    ) {
+                    }
 
                     override fun onTrack(transceiver: RtpTransceiver?) {
                         Log.d(TAG, "Track added")
@@ -207,10 +213,11 @@ object WebRTCService {
 
     // ==========================================
     // ===== START SCREEN STREAM (SCREEN MIRRORING) =====
+    // mediaProjectionData adalah Intent dari onActivityResult
     // ==========================================
     fun startScreenStream(
         context: Context,
-        mediaProjection: android.media.projection.MediaProjection,
+        mediaProjectionData: Intent,
         withAudio: Boolean = true,
     ): Boolean {
         if (isStreaming) {
@@ -223,12 +230,11 @@ object WebRTCService {
             val metrics = context.resources.displayMetrics
             val screenWidth = metrics.widthPixels
             val screenHeight = metrics.heightPixels
-            val screenDensity = metrics.densityDpi
 
             // ===== SCREEN CAPTURER =====
-            val videoCapturer = ScreenCapturerAndroid(
-                mediaProjection.createScreenCaptureIntent(),
-                object : android.media.projection.MediaProjection.Callback() {
+            val screenCapturer = ScreenCapturerAndroid(
+                mediaProjectionData,
+                object : MediaProjection.Callback() {
                     override fun onStop() {
                         Log.d(TAG, "Screen capture stopped")
                     }
@@ -241,7 +247,7 @@ object WebRTCService {
             )
 
             videoSource = peerConnectionFactory!!.createVideoSource(false)
-            videoCapturer.initialize(
+            screenCapturer.initialize(
                 surfaceTextureHelper,
                 context,
                 videoSource!!.capturerObserver,
@@ -249,6 +255,9 @@ object WebRTCService {
 
             videoTrack = peerConnectionFactory!!.createVideoTrack("screen0", videoSource)
             videoTrack!!.setEnabled(true)
+
+            // simpan referensi agar bisa distop
+            videoCapturer = screenCapturer
 
             // ===== AUDIO =====
             if (withAudio) {
@@ -270,7 +279,6 @@ object WebRTCService {
             peerConnection = peerConnectionFactory!!.createPeerConnection(
                 rtcConfig,
                 object : PeerConnection.Observer {
-                    // ... same as camera stream observer
                     override fun onIceCandidate(candidate: IceCandidate?) {
                         try {
                             val json = JSONObject().apply {
@@ -279,8 +287,10 @@ object WebRTCService {
                                 put("sdpMLineIndex", candidate?.sdpMLineIndex)
                             }
                             onIceCandidate?.invoke(json)
-                        } catch (e: Exception) {}
+                        } catch (e: Exception) {
+                        }
                     }
+
                     override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
                     override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
                     override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {}
@@ -290,7 +300,12 @@ object WebRTCService {
                     override fun onRemoveStream(stream: MediaStream?) {}
                     override fun onDataChannel(channel: DataChannel?) {}
                     override fun onRenegotiationNeeded() {}
-                    override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
+                    override fun onAddTrack(
+                        receiver: RtpReceiver?,
+                        streams: Array<out MediaStream>?,
+                    ) {
+                    }
+
                     override fun onTrack(transceiver: RtpTransceiver?) {}
                 },
             )
@@ -301,7 +316,7 @@ object WebRTCService {
                 peerConnection!!.addTrack(audioTrack, streamIds)
             }
 
-            videoCapturer.startCapture(screenWidth, screenHeight, 30)
+            screenCapturer.startCapture(screenWidth, screenHeight, 30)
 
             isStreaming = true
             Log.d(TAG, "✅ Screen mirroring started")
@@ -335,6 +350,7 @@ object WebRTCService {
                                 callback(json)
                                 Log.d(TAG, "✅ Offer created")
                             }
+
                             override fun onCreateFailure(p0: String?) {}
                             override fun onSetFailure(p0: String?) {}
                         }, sdp)
@@ -353,6 +369,7 @@ object WebRTCService {
                 override fun onCreateFailure(error: String?) {
                     Log.e(TAG, "Create offer failed: $error")
                 }
+
                 override fun onSetFailure(error: String?) {}
             }, constraints)
         } catch (e: Exception) {
@@ -368,6 +385,7 @@ object WebRTCService {
                 override fun onSetSuccess() {
                     Log.d(TAG, "✅ Remote answer set")
                 }
+
                 override fun onCreateFailure(p0: String?) {}
                 override fun onSetFailure(p0: String?) {}
             }, answer)
