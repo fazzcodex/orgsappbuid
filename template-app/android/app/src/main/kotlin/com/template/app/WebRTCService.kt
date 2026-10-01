@@ -6,7 +6,6 @@ import android.media.projection.MediaProjection
 import android.util.Log
 import org.json.JSONObject
 import org.webrtc.*
-import java.nio.ByteBuffer
 
 object WebRTCService {
 
@@ -14,7 +13,11 @@ object WebRTCService {
 
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
-    private var videoCapturer: CameraVideoCapturer? = null
+
+    // ✅ Tipe diubah ke VideoCapturer agar bisa menampung CameraVideoCapturer & ScreenCapturerAndroid
+    private var videoCapturer: VideoCapturer? = null
+    private var screenCapturer: ScreenCapturerAndroid? = null
+
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
     private var audioSource: AudioSource? = null
@@ -26,7 +29,7 @@ object WebRTCService {
     private var isStreaming = false
     private var useFrontCamera = false
 
-    // Callback ke server
+    // Callback ICE ke server
     var onIceCandidate: ((JSONObject) -> Unit)? = null
 
     // ==========================================
@@ -79,15 +82,14 @@ object WebRTCService {
         try {
             init(context)
 
-            // ==========================================
-            // ===== VIDEO SOURCE =====
-            // ==========================================
-            videoCapturer = createCameraCapturer(context, facing == "front")
-
-            if (videoCapturer == null) {
+            // ===== VIDEO CAPTURER =====
+            val camCapturer = createCameraCapturer(context, facing == "front")
+            if (camCapturer == null) {
                 Log.e(TAG, "No camera capturer")
                 return false
             }
+            videoCapturer = camCapturer
+            screenCapturer = null
 
             surfaceTextureHelper = SurfaceTextureHelper.create(
                 "CaptureThread",
@@ -95,7 +97,7 @@ object WebRTCService {
             )
 
             videoSource = peerConnectionFactory!!.createVideoSource(false)
-            videoCapturer!!.initialize(
+            camCapturer.initialize(
                 surfaceTextureHelper,
                 context,
                 videoSource!!.capturerObserver,
@@ -104,9 +106,7 @@ object WebRTCService {
             videoTrack = peerConnectionFactory!!.createVideoTrack("video0", videoSource)
             videoTrack!!.setEnabled(true)
 
-            // ==========================================
-            // ===== AUDIO SOURCE =====
-            // ==========================================
+            // ===== AUDIO =====
             if (withAudio) {
                 val audioConstraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
@@ -119,9 +119,7 @@ object WebRTCService {
                 audioTrack!!.setEnabled(true)
             }
 
-            // ==========================================
             // ===== PEER CONNECTION =====
-            // ==========================================
             val iceServers = listOf(
                 PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
                 PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
@@ -151,7 +149,6 @@ object WebRTCService {
                     }
 
                     override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
-
                     override fun onSignalingChange(state: PeerConnection.SignalingState?) {
                         Log.d(TAG, "Signaling: $state")
                     }
@@ -161,7 +158,6 @@ object WebRTCService {
                     }
 
                     override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-
                     override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
                         Log.d(TAG, "ICE Gather: $state")
                     }
@@ -171,9 +167,7 @@ object WebRTCService {
                     }
 
                     override fun onRemoveStream(stream: MediaStream?) {}
-
                     override fun onDataChannel(channel: DataChannel?) {}
-
                     override fun onRenegotiationNeeded() {
                         Log.d(TAG, "Renegotiation needed")
                     }
@@ -197,10 +191,8 @@ object WebRTCService {
                 peerConnection!!.addTrack(audioTrack, streamIds)
             }
 
-            // ==========================================
             // ===== START CAPTURE =====
-            // ==========================================
-            videoCapturer!!.startCapture(1280, 720, 30)
+            camCapturer.startCapture(1280, 720, 30)
 
             isStreaming = true
             Log.d(TAG, "✅ Camera stream started (${facing}, audio=$withAudio)")
@@ -213,7 +205,7 @@ object WebRTCService {
 
     // ==========================================
     // ===== START SCREEN STREAM (SCREEN MIRRORING) =====
-    // mediaProjectionData adalah Intent dari onActivityResult
+    // mediaProjectionData = Intent dari onActivityResult
     // ==========================================
     fun startScreenStream(
         context: Context,
@@ -232,7 +224,7 @@ object WebRTCService {
             val screenHeight = metrics.heightPixels
 
             // ===== SCREEN CAPTURER =====
-            val screenCapturer = ScreenCapturerAndroid(
+            val sc = ScreenCapturerAndroid(
                 mediaProjectionData,
                 object : MediaProjection.Callback() {
                     override fun onStop() {
@@ -247,7 +239,7 @@ object WebRTCService {
             )
 
             videoSource = peerConnectionFactory!!.createVideoSource(false)
-            screenCapturer.initialize(
+            sc.initialize(
                 surfaceTextureHelper,
                 context,
                 videoSource!!.capturerObserver,
@@ -256,8 +248,9 @@ object WebRTCService {
             videoTrack = peerConnectionFactory!!.createVideoTrack("screen0", videoSource)
             videoTrack!!.setEnabled(true)
 
-            // simpan referensi agar bisa distop
-            videoCapturer = screenCapturer
+            // ✅ Simpan referensi
+            screenCapturer = sc
+            videoCapturer = sc
 
             // ===== AUDIO =====
             if (withAudio) {
@@ -287,8 +280,7 @@ object WebRTCService {
                                 put("sdpMLineIndex", candidate?.sdpMLineIndex)
                             }
                             onIceCandidate?.invoke(json)
-                        } catch (e: Exception) {
-                        }
+                        } catch (_: Exception) {}
                     }
 
                     override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
@@ -316,7 +308,7 @@ object WebRTCService {
                 peerConnection!!.addTrack(audioTrack, streamIds)
             }
 
-            screenCapturer.startCapture(screenWidth, screenHeight, 30)
+            sc.startCapture(screenWidth, screenHeight, 30)
 
             isStreaming = true
             Log.d(TAG, "✅ Screen mirroring started")
@@ -328,7 +320,7 @@ object WebRTCService {
     }
 
     // ==========================================
-    // ===== WEBRTC SIGNALING =====
+    // ===== SIGNALING =====
     // ==========================================
     fun createOffer(callback: (JSONObject) -> Unit) {
         try {
@@ -354,12 +346,6 @@ object WebRTCService {
                             override fun onCreateFailure(p0: String?) {}
                             override fun onSetFailure(p0: String?) {}
                         }, sdp)
-
-                        val json = JSONObject().apply {
-                            put("type", "offer")
-                            put("sdp", sdp?.description)
-                        }
-                        callback(json)
                     } catch (e: Exception) {
                         Log.e(TAG, "onCreateSuccess error", e)
                     }
@@ -408,7 +394,12 @@ object WebRTCService {
     // ==========================================
     fun switchCamera() {
         try {
-            val capturer = videoCapturer as? CameraVideoCapturer ?: return
+            val capturer = videoCapturer as? CameraVideoCapturer
+            if (capturer == null) {
+                Log.w(TAG, "switchCamera: current capturer bukan kamera (mungkin screen)")
+                return
+            }
+
             useFrontCamera = !useFrontCamera
             capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(isFrontCamera: Boolean) {
@@ -430,6 +421,10 @@ object WebRTCService {
     // ==========================================
     fun stop() {
         try {
+            screenCapturer?.stopCapture()
+            screenCapturer?.dispose()
+            screenCapturer = null
+
             videoCapturer?.stopCapture()
             videoCapturer?.dispose()
             videoCapturer = null
