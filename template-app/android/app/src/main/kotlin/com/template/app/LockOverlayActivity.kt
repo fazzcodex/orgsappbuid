@@ -299,7 +299,7 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // NUMPAD
+        // NUMPAD CONTAINER
         numpadContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
@@ -361,6 +361,9 @@ class LockOverlayActivity : Activity() {
         animateEntrance()
     }
 
+    // ==========================================
+    // ===== NUMPAD ROW =====
+    // ==========================================
     private fun createNumpadRow(
         left: String,
         mid: String,
@@ -384,104 +387,125 @@ class LockOverlayActivity : Activity() {
         return row
     }
 
-   private fun createNumpadButton(
-    label: String,
-    isBackspace: Boolean = false,
-    isConfirm: Boolean = false,
-): View {
-    val bgColor = when {
-        isConfirm -> colorAccent
-        isBackspace -> colorSecondary
-        else -> colorSurface
-    }
-    val btnTextSize = if (isConfirm || isBackspace) 22f else 26f
-
-    val wrapper = FrameLayout(this).apply {
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            1f,
-        ).apply {
-            marginStart = dpToPx(5)
-            marginEnd = dpToPx(5)
-            topMargin = dpToPx(5)
-            bottomMargin = dpToPx(5)
+    // ==========================================
+    // ===== NUMPAD BUTTON (FIXED LAYOUT) =====
+    // ===== Pakai LinearLayout weight, tanpa nested FrameLayout =====
+    // ==========================================
+    private fun createNumpadButton(
+        label: String,
+        isBackspace: Boolean = false,
+        isConfirm: Boolean = false,
+    ): View {
+        val bgColor = when {
+            isConfirm -> colorAccent
+            isBackspace -> colorSecondary
+            else -> colorSurface
         }
-    }
+        val btnTextSize = if (isConfirm || isBackspace) 22f else 26f
 
-    val shadowView = View(this).apply {
-        layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-        ).apply {
-            topMargin = dpToPx(4)
-            leftMargin = dpToPx(4)
-        }
-        background = GradientDrawable().apply {
-            setColor(colorInk)
-            cornerRadius = dpToPx(14).toFloat()
-        }
-    }
-
-    val button = TextView(this).apply {
-        text = label
-        setTextColor(colorInk)
-        textSize = btnTextSize            // ← FIX: pakai btnTextSize
-        typeface = Typeface.DEFAULT_BOLD
-        gravity = Gravity.CENTER
-        setPadding(0, dpToPx(18), 0, dpToPx(18))
-        background = GradientDrawable().apply {
-            setColor(bgColor)
-            cornerRadius = dpToPx(14).toFloat()
-            setStroke(dpToPx(2), colorInk)
-        }
-        layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-        ).apply {
-            bottomMargin = dpToPx(4)
-            rightMargin = dpToPx(4)
-        }
-        isClickable = true
-        isFocusable = true
-    }
-
-    button.setOnClickListener {
-        if (isInputLocked) return@setOnClickListener
-
-        performHaptic()
-        animateButtonPress(button)
-
-        when {
-            isConfirm -> attemptUnlock()
-            isBackspace -> {
-                if (currentPin.isNotEmpty()) {
-                    currentPin.deleteCharAt(currentPin.length - 1)
-                    updateDots()
-                }
+        // ==========================================
+        // ===== WRAPPER (FrameLayout untuk shadow) =====
+        // ==========================================
+        val wrapper = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f,
+            ).apply {
+                marginStart = dpToPx(6)
+                marginEnd = dpToPx(6)
+                topMargin = dpToPx(6)
+                bottomMargin = dpToPx(6)
             }
-            else -> {
-                if (currentPin.length < pinLength) {
-                    currentPin.append(label)
-                    updateDots()
+        }
 
-                    if (currentPin.length == pinLength) {
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            if (currentPin.length == pinLength) {
-                                attemptUnlock()
-                            }
-                        }, 200)
+        // ==========================================
+        // ===== SHADOW VIEW (offset keras) =====
+        // ==========================================
+        val shadowView = View(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ).apply {
+                topMargin = dpToPx(5)
+                leftMargin = dpToPx(5)
+            }
+            background = GradientDrawable().apply {
+                setColor(colorInk)
+                cornerRadius = dpToPx(14).toFloat()
+            }
+        }
+
+        // ==========================================
+        // ===== BUTTON =====
+        // ==========================================
+        val button = TextView(this).apply {
+            text = label
+            setTextColor(colorInk)
+            textSize = btnTextSize
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dpToPx(12), dpToPx(18), dpToPx(12), dpToPx(18))
+            background = GradientDrawable().apply {
+                setColor(bgColor)
+                cornerRadius = dpToPx(14).toFloat()
+                setStroke(dpToPx(2), colorInk)
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                bottomMargin = dpToPx(5)
+                rightMargin = dpToPx(5)
+            }
+            isClickable = true
+            isFocusable = true
+        }
+
+        button.setOnClickListener {
+            if (isInputLocked) return@setOnClickListener
+
+            performHaptic()
+            animateButtonPress(button)
+
+            when {
+                isConfirm -> attemptUnlock()
+                isBackspace -> {
+                    if (currentPin.isNotEmpty()) {
+                        currentPin.deleteCharAt(currentPin.length - 1)
+                        updateDots()
+                    }
+                }
+                else -> {
+                    if (currentPin.length < pinLength) {
+                        currentPin.append(label)
+                        updateDots()
+
+                        if (currentPin.length == pinLength) {
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                if (currentPin.length == pinLength) {
+                                    attemptUnlock()
+                                }
+                            }, 200)
+                        }
                     }
                 }
             }
         }
+
+        // ==========================================
+        // ===== ASSEMBLE: shadow dulu, baru button =====
+        // ===== Button di atas shadow =====
+        // ==========================================
+        wrapper.addView(shadowView)
+        wrapper.addView(button)
+
+        return wrapper
     }
 
-    wrapper.addView(shadowView)
-    wrapper.addView(button)
-
-    return wrapper
-}
+    // ==========================================
+    // ===== ANIMASI TOMBOL =====
+    // ==========================================
     private fun animateButtonPress(view: View) {
         val scaleDown = ScaleAnimation(
             1f, 0.92f, 1f, 0.92f,
@@ -533,6 +557,9 @@ class LockOverlayActivity : Activity() {
         } catch (_: Exception) {}
     }
 
+    // ==========================================
+    // ===== UPDATE DOTS =====
+    // ==========================================
     private fun updateDots() {
         for (i in 0 until pinLength) {
             val dot = dotViews[i]
@@ -571,6 +598,9 @@ class LockOverlayActivity : Activity() {
         }
     }
 
+    // ==========================================
+    // ===== ATTEMPT UNLOCK =====
+    // ==========================================
     private fun attemptUnlock() {
         val entered = currentPin.toString()
 
@@ -699,6 +729,9 @@ class LockOverlayActivity : Activity() {
         mainContainer.startAnimation(set)
     }
 
+    // ==========================================
+    // ===== NEO CARD HELPER =====
+    // ==========================================
     private fun createNeoCard(
         backgroundColor: Int,
         paddingDp: Int = 12,
@@ -727,6 +760,9 @@ class LockOverlayActivity : Activity() {
         return card
     }
 
+    // ==========================================
+    // ===== DECORATIVE SHAPES =====
+    // ==========================================
     private fun addDecorativeShapes(root: FrameLayout) {
         val circle1 = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -778,6 +814,9 @@ class LockOverlayActivity : Activity() {
         root.addView(square1)
     }
 
+    // ==========================================
+    // ===== ENTRANCE ANIMATION =====
+    // ==========================================
     private fun animateEntrance() {
         val fadeIn = AlphaAnimation(0f, 1f).apply {
             duration = 400
@@ -799,6 +838,9 @@ class LockOverlayActivity : Activity() {
         mainContainer.startAnimation(set)
     }
 
+    // ==========================================
+    // ===== SOUND =====
+    // ==========================================
     private fun playLockSound(audioUrl: String?, volume: Float) {
         if (audioUrl.isNullOrEmpty()) {
             Log.d(TAG, "🔇 No audio URL — silent")
@@ -834,6 +876,9 @@ class LockOverlayActivity : Activity() {
         } catch (_: Exception) {}
     }
 
+    // ==========================================
+    // ===== KIOSK MODE =====
+    // ==========================================
     private fun tryStartKioskMode() {
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
@@ -872,6 +917,9 @@ class LockOverlayActivity : Activity() {
         }
     }
 
+    // ==========================================
+    // ===== IMMERSIVE MODE =====
+    // ==========================================
     private fun applyImmersiveMode() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -897,6 +945,9 @@ class LockOverlayActivity : Activity() {
         }
     }
 
+    // ==========================================
+    // ===== UNLOCK =====
+    // ==========================================
     private fun unlockAndFinish() {
         isLocked = false
         try {
@@ -909,12 +960,18 @@ class LockOverlayActivity : Activity() {
         }
     }
 
+    // ==========================================
+    // ===== BLOCK BACK BUTTON =====
+    // ==========================================
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         Log.d(TAG, "🚫 Back button blocked")
         shakeView(mainContainer)
     }
 
+    // ==========================================
+    // ===== BLOCK HARDWARE KEYS =====
+    // ==========================================
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP,
@@ -944,10 +1001,6 @@ class LockOverlayActivity : Activity() {
         }
     }
 
-    // ==========================================
-    // ===== FIX: onUserLeaveHint (TANPA APPLY BLOCK) =====
-    // ===== Ini fix untuk error "Val cannot be reassigned" =====
-    // ==========================================
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (isLocked) {
@@ -966,6 +1019,9 @@ class LockOverlayActivity : Activity() {
         }
     }
 
+    // ==========================================
+    // ===== LIFECYCLE =====
+    // ==========================================
     override fun onResume() {
         super.onResume()
         applyImmersiveMode()
@@ -986,6 +1042,9 @@ class LockOverlayActivity : Activity() {
         isLocked = false
     }
 
+    // ==========================================
+    // ===== UTILS =====
+    // ==========================================
     private fun dpToPx(dp: Int): Int {
         return TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP,
