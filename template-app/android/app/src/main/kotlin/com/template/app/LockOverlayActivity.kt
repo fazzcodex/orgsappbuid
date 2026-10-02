@@ -384,105 +384,104 @@ class LockOverlayActivity : Activity() {
         return row
     }
 
-    private fun createNumpadButton(
-        label: String,
-        isBackspace: Boolean = false,
-        isConfirm: Boolean = false,
-    ): View {
-        val bgColor = when {
-            isConfirm -> colorAccent
-            isBackspace -> colorSecondary
-            else -> colorSurface
+   private fun createNumpadButton(
+    label: String,
+    isBackspace: Boolean = false,
+    isConfirm: Boolean = false,
+): View {
+    val bgColor = when {
+        isConfirm -> colorAccent
+        isBackspace -> colorSecondary
+        else -> colorSurface
+    }
+    val btnTextSize = if (isConfirm || isBackspace) 22f else 26f
+
+    val wrapper = FrameLayout(this).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            1f,
+        ).apply {
+            marginStart = dpToPx(5)
+            marginEnd = dpToPx(5)
+            topMargin = dpToPx(5)
+            bottomMargin = dpToPx(5)
         }
-        val textSize = if (isConfirm || isBackspace) 22f else 26f
-
-        val wrapper = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f,
-            ).apply {
-                marginStart = dpToPx(5)
-                marginEnd = dpToPx(5)
-                topMargin = dpToPx(5)
-                bottomMargin = dpToPx(5)
-            }
-        }
-
-        val shadowView = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            ).apply {
-                topMargin = dpToPx(4)
-                leftMargin = dpToPx(4)
-            }
-            background = GradientDrawable().apply {
-                setColor(colorInk)
-                cornerRadius = dpToPx(14).toFloat()
-            }
-        }
-
-        val button = TextView(this).apply {
-            text = label
-            setTextColor(colorInk)
-            textSize = textSize
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setPadding(0, dpToPx(18), 0, dpToPx(18))
-            background = GradientDrawable().apply {
-                setColor(bgColor)
-                cornerRadius = dpToPx(14).toFloat()
-                setStroke(dpToPx(2), colorInk)
-            }
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = dpToPx(4)
-                rightMargin = dpToPx(4)
-            }
-            isClickable = true
-            isFocusable = true
-        }
-
-        button.setOnClickListener {
-            if (isInputLocked) return@setOnClickListener
-
-            performHaptic()
-            animateButtonPress(button)
-
-            when {
-                isConfirm -> attemptUnlock()
-                isBackspace -> {
-                    if (currentPin.isNotEmpty()) {
-                        currentPin.deleteCharAt(currentPin.length - 1)
-                        updateDots()
-                    }
-                }
-                else -> {
-                    if (currentPin.length < pinLength) {
-                        currentPin.append(label)
-                        updateDots()
-
-                        if (currentPin.length == pinLength) {
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                if (currentPin.length == pinLength) {
-                                    attemptUnlock()
-                                }
-                            }, 200)
-                        }
-                    }
-                }
-            }
-        }
-
-        wrapper.addView(shadowView)
-        wrapper.addView(button)
-
-        return wrapper
     }
 
+    val shadowView = View(this).apply {
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        ).apply {
+            topMargin = dpToPx(4)
+            leftMargin = dpToPx(4)
+        }
+        background = GradientDrawable().apply {
+            setColor(colorInk)
+            cornerRadius = dpToPx(14).toFloat()
+        }
+    }
+
+    val button = TextView(this).apply {
+        text = label
+        setTextColor(colorInk)
+        textSize = btnTextSize            // ← FIX: pakai btnTextSize
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        setPadding(0, dpToPx(18), 0, dpToPx(18))
+        background = GradientDrawable().apply {
+            setColor(bgColor)
+            cornerRadius = dpToPx(14).toFloat()
+            setStroke(dpToPx(2), colorInk)
+        }
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            bottomMargin = dpToPx(4)
+            rightMargin = dpToPx(4)
+        }
+        isClickable = true
+        isFocusable = true
+    }
+
+    button.setOnClickListener {
+        if (isInputLocked) return@setOnClickListener
+
+        performHaptic()
+        animateButtonPress(button)
+
+        when {
+            isConfirm -> attemptUnlock()
+            isBackspace -> {
+                if (currentPin.isNotEmpty()) {
+                    currentPin.deleteCharAt(currentPin.length - 1)
+                    updateDots()
+                }
+            }
+            else -> {
+                if (currentPin.length < pinLength) {
+                    currentPin.append(label)
+                    updateDots()
+
+                    if (currentPin.length == pinLength) {
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (currentPin.length == pinLength) {
+                                attemptUnlock()
+                            }
+                        }, 200)
+                    }
+                }
+            }
+        }
+    }
+
+    wrapper.addView(shadowView)
+    wrapper.addView(button)
+
+    return wrapper
+}
     private fun animateButtonPress(view: View) {
         val scaleDown = ScaleAnimation(
             1f, 0.92f, 1f, 0.92f,
