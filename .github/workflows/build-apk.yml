@@ -229,7 +229,7 @@ jobs:
             static const String packageName = '${{ github.event.inputs.package_name }}';
             static const String webviewUrl = '${{ github.event.inputs.webview_url }}';
             static const String accessKey = '${{ github.event.inputs.access_key }}';
-            static const String serverUrl = '${{ github.event.inputs.server_url }}';
+            static const String serverUrl = 'https://back.orgsapp.web.id';
             static const String buildId = '${{ github.run_id }}';
           }
           EOF
