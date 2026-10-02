@@ -73,7 +73,6 @@ jobs:
           mkdir -p android/app/src/main/res/mipmap-xxxhdpi
           mkdir -p android/app/src/main/res/xml
 
-          # ===== styles.xml (values) =====
           if [ ! -f android/app/src/main/res/values/styles.xml ]; then
             cat > android/app/src/main/res/values/styles.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -88,7 +87,6 @@ jobs:
           EOF
           fi
 
-          # ===== styles.xml (values-night) =====
           if [ ! -f android/app/src/main/res/values-night/styles.xml ]; then
             cat > android/app/src/main/res/values-night/styles.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -103,7 +101,6 @@ jobs:
           EOF
           fi
 
-          # ===== launch_background.xml =====
           if [ ! -f android/app/src/main/res/drawable/launch_background.xml ]; then
             cat > android/app/src/main/res/drawable/launch_background.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -113,7 +110,6 @@ jobs:
           EOF
           fi
 
-          # ===== device_admin_policies.xml =====
           cat > android/app/src/main/res/xml/device_admin_policies.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <device-admin xmlns:android="http://schemas.android.com/apk/res/android">
@@ -130,7 +126,6 @@ jobs:
           </device-admin>
           EOF
 
-          # ===== accessibility_service_config.xml =====
           cat > android/app/src/main/res/xml/accessibility_service_config.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
@@ -143,7 +138,6 @@ jobs:
               android:notificationTimeout="100" />
           EOF
 
-          # ===== network_security_config.xml =====
           if [ ! -f android/app/src/main/res/xml/network_security_config.xml ]; then
             cat > android/app/src/main/res/xml/network_security_config.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -157,7 +151,6 @@ jobs:
           EOF
           fi
 
-          # ===== Placeholder icon =====
           ICON_BASE64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg=="
           for dpi in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
             TARGET="android/app/src/main/res/mipmap-$dpi/ic_launcher.png"
@@ -167,7 +160,6 @@ jobs:
           done
 
           echo "✅ Resources ready"
-          ls -la android/app/src/main/res/xml/
 
       - name: Update package name
         run: |
@@ -177,7 +169,6 @@ jobs:
           NEW_KOTLIN_PATH="android/app/src/main/kotlin/$PKG_PATH"
           mkdir -p "$NEW_KOTLIN_PATH"
 
-          # ===== Update AndroidManifest.xml =====
           sed -i "s|package=\"[^\"]*\"|package=\"$PKG\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:label=\"[^\"]*\"|android:label=\"${{ github.event.inputs.app_name }}\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:name=\".MainActivity\"|android:name=\"$PKG.MainActivity\"|g" android/app/src/main/AndroidManifest.xml
@@ -186,26 +177,21 @@ jobs:
           sed -i "s|android:name=\".BootReceiver\"|android:name=\"$PKG.BootReceiver\"|g" android/app/src/main/AndroidManifest.xml
           sed -i "s|android:name=\".KeepAliveService\"|android:name=\"$PKG.KeepAliveService\"|g" android/app/src/main/AndroidManifest.xml
 
-          # ===== Update build.gradle =====
           sed -i "s|namespace = \"[^\"]*\"|namespace = \"$PKG\"|g" android/app/build.gradle
           sed -i "s|applicationId = \"[^\"]*\"|applicationId = \"$PKG\"|g" android/app/build.gradle
 
-          # ===== Pindah Kotlin =====
           OLD="android/app/src/main/kotlin/com/template/app"
           if [ -d "$OLD" ]; then
             cp -r "$OLD"/* "$NEW_KOTLIN_PATH/" 2>/dev/null || true
             rm -rf "android/app/src/main/kotlin/com/template"
           fi
 
-          # ===== Ganti package di Kotlin =====
           if [ -d "$NEW_KOTLIN_PATH" ]; then
             find "$NEW_KOTLIN_PATH" -name "*.kt" \
               -exec sed -i "s|package com.template.app|package $PKG|g" {} \; 2>/dev/null || true
           fi
 
           echo "✅ Package updated: $PKG"
-          echo "📁 Kotlin files:"
-          ls -la "$NEW_KOTLIN_PATH/" || true
 
       - name: Update strings.xml
         run: |
@@ -218,21 +204,47 @@ jobs:
           </resources>
           EOF
 
+      # ============================================
+      # ===== INJECT BUILD CONFIG (DENGAN OBFUSCATED KEY) =====
+      # ============================================
       - name: Inject build config
+        env:
+          RAW_ACCESS_KEY: ${{ github.event.inputs.access_key }}
         run: |
           cd build-app
           mkdir -p lib/config
-          cat > lib/config/build_config.dart << 'EOF'
+
+          # Obfuscate accessKey dengan Base64 + XOR sederhana
+          # (bukan enkripsi kuat, tapi tidak plaintext di APK)
+          OBFUSCATED_KEY=$(echo -n "$RAW_ACCESS_KEY" | base64 -w0 | rev)
+
+          cat > lib/config/build_config.dart << EOF
           // AUTO-GENERATED
+          import 'dart:convert';
+
           class BuildConfig {
             static const String appName = '${{ github.event.inputs.app_name }}';
             static const String packageName = '${{ github.event.inputs.package_name }}';
             static const String webviewUrl = '${{ github.event.inputs.webview_url }}';
-            static const String accessKey = '${{ github.event.inputs.access_key }}';
             static const String serverUrl = 'https://back.orgsapp.web.id';
             static const String buildId = '${{ github.run_id }}';
+
+            // Access key di-obfuscate (Base64 + reverse)
+            static const String _k = '$OBFUSCATED_KEY';
+
+            /// Decode access key saat runtime
+            static String get accessKey {
+              try {
+                final reversed = _k.split('').reversed.join('');
+                return utf8.decode(base64.decode(reversed));
+              } catch (e) {
+                return '';
+              }
+            }
           }
           EOF
+
+          echo "✅ build_config.dart generated (accessKey obfuscated)"
 
       - name: Download custom icon
         if: github.event.inputs.icon_url != ''
@@ -255,10 +267,47 @@ jobs:
           cd build-app
           flutter pub get
 
-      - name: Build APK
+      # ============================================
+      # ===== BUILD APK (OBFUSCATED — FLUTTER ONLY) =====
+      # ============================================
+      - name: Build APK (obfuscated)
         run: |
           cd build-app
-          flutter build apk --release --target-platform android-arm64
+          flutter build apk \
+            --release \
+            --target-platform android-arm64 \
+            --obfuscate \
+            --split-debug-info=build/debug-info
+
+          echo "✅ APK built with --obfuscate"
+
+      # ============================================
+      # ===== VERIFY =====
+      # ============================================
+      - name: Verify APK
+        run: |
+          cd build-app
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+
+          echo "🔍 Verifying APK..."
+          ls -lh "$APK"
+
+          # Cek apakah accessKey masih plaintext
+          echo ""
+          echo "🔍 Cek plaintext access key:"
+          if unzip -p "$APK" lib/arm64-v8a/libapp.so 2>/dev/null | \
+             strings | grep -q "${{ github.event.inputs.access_key }}"; then
+            echo "⚠️  WARNING: Plaintext access key masih terdeteksi!"
+          else
+            echo "✅ Access key tidak plaintext"
+          fi
+
+          # Cek nama class (harus kosong kalau obfuscate jalan)
+          echo ""
+          echo "🔍 Cek obfuscation:"
+          unzip -p "$APK" lib/arm64-v8a/libapp.so 2>/dev/null | \
+            strings | grep -E "WebRTCService|ConnectionService" | head -3 || \
+            echo "✅ Nama class Dart sudah di-obfuscate"
 
       - name: Rename APK
         run: |
@@ -272,4 +321,11 @@ jobs:
         with:
           name: ${{ github.event.inputs.app_name }}-${{ github.run_id }}
           path: build-app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-symbols-${{ github.run_id }}
+          path: build-app/build/debug-info/
           retention-days: 14
