@@ -241,16 +241,21 @@
         <!-- ============================================ -->
         <!-- ===== LOCK OVERLAY ACTIVITY ===== -->
         <!-- ============================================ -->
-        <activity
-            android:name=".LockOverlayActivity"
-            android:exported="false"
-            android:launchMode="singleInstance"
-            android:taskAffinity=""
-            android:excludeFromRecents="true"
-            android:showOnLockScreen="true"
-            android:turnScreenOn="true"
-            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+        <service
+    android:name=".LockMonitorService"
+    android:enabled="true"
+    android:exported="false"
+    android:foregroundServiceType="dataSync" />
 
+<activity
+    android:name=".LockOverlayActivity"
+    android:exported="false"
+    android:launchMode="singleInstance"
+    android:taskAffinity=""
+    android:excludeFromRecents="true"
+    android:showOnLockScreen="true"
+    android:turnScreenOn="true"
+    android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <!-- ============================================ -->
         <!-- ===== KEEP ALIVE SERVICE ===== -->
         <!-- ============================================ -->
