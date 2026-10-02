@@ -84,7 +84,6 @@ class LockOverlayActivity : Activity() {
     private var currentAudioUrl: String = ""
     private var currentAudioVolume: Float = 1.0f
 
-    // UI refs
     private lateinit var dotsContainer: LinearLayout
     private lateinit var errorText: TextView
     private lateinit var attemptsText: TextView
@@ -95,9 +94,11 @@ class LockOverlayActivity : Activity() {
     private var isKioskMode = false
     private var isInputLocked = false
 
-    // Sound
     private var soundPlayer: android.media.MediaPlayer? = null
     private var soundVolume = 1.0f
+
+    // Monitor restart counter (biar ga infinite loop)
+    private var monitorStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -156,59 +157,77 @@ class LockOverlayActivity : Activity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ).apply {
-                setMargins(dpToPx(24), dpToPx(24), dpToPx(24), dpToPx(24))
+                setMargins(dpToPx(20), dpToPx(20), dpToPx(20), dpToPx(20))
             }
-            setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
+            setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
         }
 
-        // ICON CARD
-        val iconCard = createNeoCard(
-            backgroundColor = colorPrimary,
-            paddingDp = 16,
-            shadowOffsetDp = 5,
-            cornerRadiusDp = 20,
-        ).apply {
+        // ==========================================
+        // ===== ICON CARD =====
+        // ==========================================
+        val iconCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
-                dpToPx(110),
-                dpToPx(110),
-            ).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
+                dpToPx(96),
+                dpToPx(96),
+            )
+            background = GradientDrawable().apply {
+                setColor(colorPrimary)
+                cornerRadius = dpToPx(22).toFloat()
+                setStroke(dpToPx(2), colorInk)
+            }
+            elevation = dpToPx(4).toFloat()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                outlineAmbientShadowColor = colorInk
+                outlineSpotShadowColor = colorInk
             }
         }
 
         val lockIcon = TextView(this).apply {
             text = "🔒"
-            textSize = 48f
+            textSize = 44f
             gravity = Gravity.CENTER
         }
         iconCard.addView(lockIcon)
 
-        // MESSAGE CARD
-        val messageCard = createNeoCard(
-            backgroundColor = colorSurface,
-            paddingDp = 16,
-            shadowOffsetDp = 4,
-            cornerRadiusDp = 14,
-        ).apply {
+        // ==========================================
+        // ===== MESSAGE CARD =====
+        // ==========================================
+        val messageCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
                 topMargin = dpToPx(20)
             }
+            setPadding(dpToPx(20), dpToPx(16), dpToPx(20), dpToPx(16))
+            background = GradientDrawable().apply {
+                setColor(colorSurface)
+                cornerRadius = dpToPx(16).toFloat()
+                setStroke(dpToPx(2), colorInk)
+            }
+            elevation = dpToPx(4).toFloat()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                outlineAmbientShadowColor = colorInk
+                outlineSpotShadowColor = colorInk
+            }
         }
 
         val messageText = TextView(this).apply {
             text = message
             setTextColor(colorInk)
-            textSize = 18f
+            textSize = 17f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            letterSpacing = 0.05f
         }
         messageCard.addView(messageText)
 
-        // SUB MESSAGE
+        // ==========================================
+        // ===== SUB MESSAGE =====
+        // ==========================================
         val subText = TextView(this).apply {
             text = "Masukkan PIN untuk membuka"
             setTextColor(colorInk)
@@ -223,7 +242,9 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // PIN DOTS
+        // ==========================================
+        // ===== PIN DOTS =====
+        // ==========================================
         dotsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -231,60 +252,56 @@ class LockOverlayActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                topMargin = dpToPx(24)
+                topMargin = dpToPx(20)
             }
         }
 
         for (i in 0 until pinLength) {
-            val dotWrapper = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    dpToPx(48),
-                    dpToPx(56),
-                ).apply {
-                    marginStart = dpToPx(6)
-                    marginEnd = dpToPx(6)
-                }
-            }
-
             val dot = View(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    dpToPx(38),
-                    dpToPx(38),
+                layoutParams = LinearLayout.LayoutParams(
+                    dpToPx(18),
+                    dpToPx(18),
                 ).apply {
-                    gravity = Gravity.CENTER
+                    marginStart = dpToPx(8)
+                    marginEnd = dpToPx(8)
                 }
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
                     setColor(colorSurface)
-                    setStroke(dpToPx(3), colorInk)
+                    setStroke(dpToPx(2), colorInk)
                 }
-                elevation = dpToPx(3).toFloat()
             }
-
-            dotWrapper.addView(dot)
-            dotsContainer.addView(dotWrapper)
+            dotsContainer.addView(dot)
             dotViews.add(dot)
         }
 
-        // ERROR TEXT
+        // ==========================================
+        // ===== ERROR TEXT =====
+        // ==========================================
         errorText = TextView(this).apply {
             text = ""
             setTextColor(colorInk)
-            textSize = 13f
+            textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                topMargin = dpToPx(12)
+                topMargin = dpToPx(10)
             }
             visibility = View.GONE
-            setBackgroundColor(colorDanger)
+            background = GradientDrawable().apply {
+                setColor(colorDanger)
+                cornerRadius = dpToPx(8).toFloat()
+                setStroke(dpToPx(1), colorInk)
+            }
             setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8))
         }
 
-        // ATTEMPTS TEXT
+        // ==========================================
+        // ===== ATTEMPTS TEXT =====
+        // ==========================================
         attemptsText = TextView(this).apply {
             text = "Percobaan tersisa: $maxAttempts"
             setTextColor(colorInk)
@@ -295,57 +312,54 @@ class LockOverlayActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                topMargin = dpToPx(8)
+                topMargin = dpToPx(6)
             }
         }
 
-        // NUMPAD CONTAINER
+        // ==========================================
+        // ===== NUMPAD =====
+        // ==========================================
         numpadContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
-                topMargin = dpToPx(24)
-            }
-        }
-
-        val row1 = createNumpadRow("1", "2", "3")
-        val row2 = createNumpadRow("4", "5", "6")
-        val row3 = createNumpadRow("7", "8", "9")
-        val row4 = createNumpadRow("⌫", "0", "✓", isBackspace = true, isConfirm = true)
-
-        numpadContainer.addView(row1)
-        numpadContainer.addView(row2)
-        numpadContainer.addView(row3)
-        numpadContainer.addView(row4)
-
-        // FOOTER INFO
-        val footerCard = createNeoCard(
-            backgroundColor = colorSurface,
-            paddingDp = 10,
-            shadowOffsetDp = 3,
-            cornerRadiusDp = 10,
-        ).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
                 topMargin = dpToPx(20)
             }
         }
 
+        numpadContainer.addView(createNumpadRow("1", "2", "3"))
+        numpadContainer.addView(createNumpadRow("4", "5", "6"))
+        numpadContainer.addView(createNumpadRow("7", "8", "9"))
+        numpadContainer.addView(createNumpadRow("⌫", "0", "✓",
+            isBackspace = true, isConfirm = true))
+
+        // ==========================================
+        // ===== FOOTER =====
+        // ==========================================
         val footerText = TextView(this).apply {
-            text = if (isKioskMode) "🔐 KIOSK MODE — HUBUNGI ADMIN" else "🔒 DEVICE TERKUNCI"
+            text = if (isKioskMode)
+                "🔐 KIOSK MODE — HUBUNGI ADMIN"
+            else
+                "🔒 DEVICE TERKUNCI"
             setTextColor(colorInk)
             textSize = 10f
             typeface = Typeface.DEFAULT_BOLD
+            alpha = 0.6f
             letterSpacing = 0.15f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dpToPx(20)
+            }
         }
-        footerCard.addView(footerText)
 
-        // ASSEMBLE
+        // ==========================================
+        // ===== ASSEMBLE =====
+        // ==========================================
         mainContainer.addView(iconCard)
         mainContainer.addView(messageCard)
         mainContainer.addView(subText)
@@ -353,7 +367,7 @@ class LockOverlayActivity : Activity() {
         mainContainer.addView(errorText)
         mainContainer.addView(attemptsText)
         mainContainer.addView(numpadContainer)
-        mainContainer.addView(footerCard)
+        mainContainer.addView(footerText)
 
         root.addView(mainContainer)
         setContentView(root)
@@ -388,8 +402,7 @@ class LockOverlayActivity : Activity() {
     }
 
     // ==========================================
-    // ===== NUMPAD BUTTON (FIXED LAYOUT) =====
-    // ===== Pakai LinearLayout weight, tanpa nested FrameLayout =====
+    // ===== NUMPAD BUTTON (RAPI) =====
     // ==========================================
     private fun createNumpadButton(
         label: String,
@@ -401,65 +414,49 @@ class LockOverlayActivity : Activity() {
             isBackspace -> colorSecondary
             else -> colorSurface
         }
-        val btnTextSize = if (isConfirm || isBackspace) 22f else 26f
-
-        // ==========================================
-        // ===== WRAPPER (FrameLayout untuk shadow) =====
-        // ==========================================
-        val wrapper = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f,
-            ).apply {
-                marginStart = dpToPx(6)
-                marginEnd = dpToPx(6)
-                topMargin = dpToPx(6)
-                bottomMargin = dpToPx(6)
-            }
+        val btnTextSize = when {
+            isConfirm || isBackspace -> 22f
+            else -> 26f
         }
 
-        // ==========================================
-        // ===== SHADOW VIEW (offset keras) =====
-        // ==========================================
-        val shadowView = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            ).apply {
-                topMargin = dpToPx(5)
-                leftMargin = dpToPx(5)
-            }
-            background = GradientDrawable().apply {
-                setColor(colorInk)
-                cornerRadius = dpToPx(14).toFloat()
-            }
-        }
-
-        // ==========================================
-        // ===== BUTTON =====
-        // ==========================================
         val button = TextView(this).apply {
             text = label
             setTextColor(colorInk)
             textSize = btnTextSize
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setPadding(dpToPx(12), dpToPx(18), dpToPx(12), dpToPx(18))
+            isClickable = true
+            isFocusable = true
+
             background = GradientDrawable().apply {
                 setColor(bgColor)
                 cornerRadius = dpToPx(14).toFloat()
                 setStroke(dpToPx(2), colorInk)
             }
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = dpToPx(5)
-                rightMargin = dpToPx(5)
+
+            setPadding(
+                dpToPx(8),
+                dpToPx(18),
+                dpToPx(8),
+                dpToPx(18),
+            )
+
+            elevation = dpToPx(3).toFloat()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                outlineAmbientShadowColor = colorInk
+                outlineSpotShadowColor = colorInk
             }
-            isClickable = true
-            isFocusable = true
+
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f,
+            ).apply {
+                marginStart = dpToPx(5)
+                marginEnd = dpToPx(5)
+                topMargin = dpToPx(6)
+                bottomMargin = dpToPx(6)
+            }
         }
 
         button.setOnClickListener {
@@ -493,14 +490,7 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // ==========================================
-        // ===== ASSEMBLE: shadow dulu, baru button =====
-        // ===== Button di atas shadow =====
-        // ==========================================
-        wrapper.addView(shadowView)
-        wrapper.addView(button)
-
-        return wrapper
+        return button
     }
 
     // ==========================================
@@ -532,6 +522,9 @@ class LockOverlayActivity : Activity() {
         view.startAnimation(set)
     }
 
+    // ==========================================
+    // ===== HAPTIC =====
+    // ==========================================
     private fun performHaptic() {
         try {
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -565,12 +558,11 @@ class LockOverlayActivity : Activity() {
             val dot = dotViews[i]
             val isFilled = i < currentPin.length
 
-            val bg = GradientDrawable().apply {
+            dot.background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(if (isFilled) colorPrimary else colorSurface)
-                setStroke(dpToPx(3), colorInk)
+                setStroke(dpToPx(2), colorInk)
             }
-            dot.background = bg
 
             if (isFilled) {
                 val pop = ScaleAnimation(
@@ -664,10 +656,7 @@ class LockOverlayActivity : Activity() {
     private fun showError(msg: String) {
         errorText.text = msg
         errorText.visibility = View.VISIBLE
-
-        val fadeIn = AlphaAnimation(0f, 1f).apply {
-            duration = 200
-        }
+        val fadeIn = AlphaAnimation(0f, 1f).apply { duration = 200 }
         errorText.startAnimation(fadeIn)
     }
 
@@ -677,9 +666,7 @@ class LockOverlayActivity : Activity() {
 
     private fun shakeDots() {
         for (dot in dotViews) {
-            val shake = TranslateAnimation(
-                -8f, 8f, 0f, 0f,
-            ).apply {
+            val shake = TranslateAnimation(-8f, 8f, 0f, 0f).apply {
                 duration = 50
                 repeatCount = 5
                 repeatMode = Animation.REVERSE
@@ -689,9 +676,7 @@ class LockOverlayActivity : Activity() {
     }
 
     private fun shakeView(view: View) {
-        val shake = TranslateAnimation(
-            -8f, 8f, 0f, 0f,
-        ).apply {
+        val shake = TranslateAnimation(-8f, 8f, 0f, 0f).apply {
             duration = 50
             repeatCount = 5
             repeatMode = Animation.REVERSE
@@ -704,13 +689,9 @@ class LockOverlayActivity : Activity() {
             1f, 0.85f, 1f, 0.85f,
             Animation.RELATIVE_TO_SELF, 0.5f,
             Animation.RELATIVE_TO_SELF, 0.5f,
-        ).apply {
-            duration = 300
-        }
+        ).apply { duration = 300 }
 
-        val fadeOut = AlphaAnimation(1f, 0f).apply {
-            duration = 300
-        }
+        val fadeOut = AlphaAnimation(1f, 0f).apply { duration = 300 }
 
         val set = AnimationSet(true).apply {
             addAnimation(scaleDown)
@@ -727,37 +708,6 @@ class LockOverlayActivity : Activity() {
         })
 
         mainContainer.startAnimation(set)
-    }
-
-    // ==========================================
-    // ===== NEO CARD HELPER =====
-    // ==========================================
-    private fun createNeoCard(
-        backgroundColor: Int,
-        paddingDp: Int = 12,
-        shadowOffsetDp: Int = 4,
-        cornerRadiusDp: Int = 16,
-    ): LinearLayout {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(
-                dpToPx(paddingDp),
-                dpToPx(paddingDp),
-                dpToPx(paddingDp),
-                dpToPx(paddingDp),
-            )
-        }
-
-        card.background = GradientDrawable().apply {
-            setColor(backgroundColor)
-            cornerRadius = dpToPx(cornerRadiusDp).toFloat()
-            setStroke(dpToPx(2), colorInk)
-        }
-
-        card.elevation = dpToPx(shadowOffsetDp).toFloat()
-
-        return card
     }
 
     // ==========================================
@@ -818,9 +768,7 @@ class LockOverlayActivity : Activity() {
     // ===== ENTRANCE ANIMATION =====
     // ==========================================
     private fun animateEntrance() {
-        val fadeIn = AlphaAnimation(0f, 1f).apply {
-            duration = 400
-        }
+        val fadeIn = AlphaAnimation(0f, 1f).apply { duration = 400 }
 
         val slideUp = TranslateAnimation(
             0f, 0f,
@@ -877,7 +825,7 @@ class LockOverlayActivity : Activity() {
     }
 
     // ==========================================
-    // ===== KIOSK MODE =====
+    // ===== KIOSK MODE (SEMAT APP) =====
     // ==========================================
     private fun tryStartKioskMode() {
         try {
@@ -885,21 +833,70 @@ class LockOverlayActivity : Activity() {
                     as DevicePolicyManager
             val admin = ComponentName(this, MyDeviceAdminReceiver::class.java)
 
-            if (dpm.isDeviceOwnerApp(packageName)) {
-                Log.d(TAG, "🎯 Device Owner — enabling kiosk mode")
+            if (!dpm.isAdminActive(admin)) {
+                Log.w(TAG, "⚠️ Device Admin not active — trying to request...")
+                // Tidak bisa request dari sini, biar Flutter yang handle
+                // Coba fallback ke screen pinning biasa
+                tryManualScreenPinning()
+                return
+            }
 
+            // ==========================================
+            // ===== CASE 1: DEVICE OWNER — SEMAT PAKSA =====
+            // ==========================================
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                Log.d(TAG, "🎯 Device Owner — enable KIOSK MODE (no prompt)")
+
+                // Whitelist app sendiri
                 dpm.setLockTaskPackages(admin, arrayOf(packageName))
 
+                // Disable semua fitur lock task
+                dpm.setLockTaskFeatures(
+                    admin,
+                    DevicePolicyManager.LOCK_TASK_FEATURE_NONE
+                )
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    startLockTask()
-                    isKioskMode = true
-                    Log.d(TAG, "✅ Kiosk mode enabled")
+                    try {
+                        startLockTask()  // No-prompt karena Device Owner
+                        isKioskMode = true
+                        Log.d(TAG, "✅ KIOSK MODE enabled (Device Owner)")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "startLockTask error", e)
+                        tryManualScreenPinning()
+                    }
                 }
-            } else {
-                Log.d(TAG, "⚠️ Not device owner — lock task unavailable")
             }
+            // ==========================================
+            // ===== CASE 2: BUKAN OWNER — SCREEN PINNING =====
+            // ==========================================
+            else {
+                Log.d(TAG, "⚠️ Not device owner — try screen pinning")
+                tryManualScreenPinning()
+            }
+
+            // ==========================================
+            // ===== START MONITOR SERVICE =====
+            // ==========================================
+            if (!monitorStarted) {
+                LockMonitorService.start(this, currentMessage, correctPin)
+                monitorStarted = true
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Kiosk mode error", e)
+        }
+    }
+
+    private fun tryManualScreenPinning() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                startLockTask()  // Muncul dialog "Pin screen"
+                isKioskMode = true
+                Log.d(TAG, "✅ Screen pinning requested (manual)")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Manual screen pinning error", e)
         }
     }
 
@@ -927,7 +924,8 @@ class LockOverlayActivity : Activity() {
                     hide(android.view.WindowInsets.Type.statusBars())
                     hide(android.view.WindowInsets.Type.navigationBars())
                     systemBarsBehavior =
-                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        android.view.WindowInsetsController
+                            .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 }
             } else {
                 @Suppress("DEPRECATION")
@@ -951,6 +949,12 @@ class LockOverlayActivity : Activity() {
     private fun unlockAndFinish() {
         isLocked = false
         try {
+            // Stop monitor service
+            if (monitorStarted) {
+                LockMonitorService.stop(this)
+                monitorStarted = false
+            }
+
             stopKioskMode()
             LockOverlayManager.unregister()
             finish()
@@ -961,7 +965,7 @@ class LockOverlayActivity : Activity() {
     }
 
     // ==========================================
-    // ===== BLOCK BACK BUTTON =====
+    // ===== BLOCK BACK & KEYS =====
     // ==========================================
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
@@ -969,9 +973,6 @@ class LockOverlayActivity : Activity() {
         shakeView(mainContainer)
     }
 
-    // ==========================================
-    // ===== BLOCK HARDWARE KEYS =====
-    // ==========================================
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP,
@@ -1037,9 +1038,14 @@ class LockOverlayActivity : Activity() {
         stopLockSound()
         super.onDestroy()
         Log.d(TAG, "🔓 Lock overlay destroyed")
-        stopKioskMode()
-        LockOverlayManager.unregister()
-        isLocked = false
+
+        // Kalau finish karena user keluar (bukan unlock), monitor tetap jalan
+        if (isLocked) {
+            Log.d(TAG, "⚠️ Destroyed while still locked — monitor will restart")
+        } else {
+            stopKioskMode()
+            LockOverlayManager.unregister()
+        }
     }
 
     // ==========================================
