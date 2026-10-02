@@ -1,5 +1,4 @@
-// android/app/src/main/kotlin/com/orgsapp/target/NetworkInfoHandler.kt
-package com.orgsapp.target
+package com.template.app
 
 import android.content.Context
 import android.net.ConnectivityManager
