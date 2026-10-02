@@ -92,7 +92,7 @@ class MainActivity : FlutterActivity() {
         cameraHandler = Handler(cameraThread!!.looper)
 
         // ✅ Auto-grant semua permission kalau Device Owner
-        tryAutoGrantPermissions()
+
 
         requestBatteryOptimizationExemption()
         requestCameraPermissionIfNeeded()
