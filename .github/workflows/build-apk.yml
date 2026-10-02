@@ -26,7 +26,7 @@ on:
       server_url:
         description: 'Backend Server URL'
         required: false
-        default: 'http://78.154.103.11:3000'
+        default: 'https://back.orgsapp.web.id'
 
 jobs:
   build:
