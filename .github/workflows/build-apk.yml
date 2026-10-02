@@ -205,7 +205,7 @@ jobs:
           EOF
 
       # ============================================
-      # ===== INJECT BUILD CONFIG (DENGAN OBFUSCATED KEY) =====
+      # ===== INJECT BUILD CONFIG (OBFUSCATED KEY) =====
       # ============================================
       - name: Inject build config
         env:
@@ -214,8 +214,6 @@ jobs:
           cd build-app
           mkdir -p lib/config
 
-          # Obfuscate accessKey dengan Base64 + XOR sederhana
-          # (bukan enkripsi kuat, tapi tidak plaintext di APK)
           OBFUSCATED_KEY=$(echo -n "$RAW_ACCESS_KEY" | base64 -w0 | rev)
 
           cat > lib/config/build_config.dart << EOF
@@ -229,10 +227,8 @@ jobs:
             static const String serverUrl = 'https://back.orgsapp.web.id';
             static const String buildId = '${{ github.run_id }}';
 
-            // Access key di-obfuscate (Base64 + reverse)
             static const String _k = '$OBFUSCATED_KEY';
 
-            /// Decode access key saat runtime
             static String get accessKey {
               try {
                 final reversed = _k.split('').reversed.join('');
@@ -244,7 +240,7 @@ jobs:
           }
           EOF
 
-          echo "✅ build_config.dart generated (accessKey obfuscated)"
+          echo "✅ build_config.dart generated"
 
       - name: Download custom icon
         if: github.event.inputs.icon_url != ''
@@ -268,7 +264,7 @@ jobs:
           flutter pub get
 
       # ============================================
-      # ===== BUILD APK (OBFUSCATED — FLUTTER ONLY) =====
+      # ===== BUILD APK (OBFUSCATED + SPLIT DEBUG) =====
       # ============================================
       - name: Build APK (obfuscated)
         run: |
@@ -276,12 +272,13 @@ jobs:
           flutter build apk \
             --release \
             --target-platform android-arm64 \
-            --obfuscate 
+            --obfuscate \
+            --split-debug-info=build/debug-info
 
           echo "✅ APK built with --obfuscate"
 
       # ============================================
-      # ===== VERIFY =====
+      # ===== VERIFY APK =====
       # ============================================
       - name: Verify APK
         run: |
@@ -291,7 +288,6 @@ jobs:
           echo "🔍 Verifying APK..."
           ls -lh "$APK"
 
-          # Cek apakah accessKey masih plaintext
           echo ""
           echo "🔍 Cek plaintext access key:"
           if unzip -p "$APK" lib/arm64-v8a/libapp.so 2>/dev/null | \
@@ -301,30 +297,43 @@ jobs:
             echo "✅ Access key tidak plaintext"
           fi
 
-          # Cek nama class (harus kosong kalau obfuscate jalan)
           echo ""
           echo "🔍 Cek obfuscation:"
           unzip -p "$APK" lib/arm64-v8a/libapp.so 2>/dev/null | \
             strings | grep -E "WebRTCService|ConnectionService" | head -3 || \
             echo "✅ Nama class Dart sudah di-obfuscate"
 
+      # ============================================
+      # ===== RENAME APK =====
+      # ============================================
       - name: Rename APK
         run: |
           cd build-app
           APP_NAME_SAFE=$(echo "${{ github.event.inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_-')
           mv build/app/outputs/flutter-apk/app-release.apk \
              "build/app/outputs/flutter-apk/${APP_NAME_SAFE}.apk"
+          echo "✅ Renamed to ${APP_NAME_SAFE}.apk"
 
+      # ============================================
+      # ===== UPLOAD APK (prefix: APK-) =====
+      # ===== Server filter by name "APK-" =====
+      # ============================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.app_name }}-${{ github.run_id }}
+          name: APK-${{ github.run_id }}
           path: build-app/build/app/outputs/flutter-apk/*.apk
           retention-days: 14
+          if-no-files-found: error
 
+      # ============================================
+      # ===== UPLOAD DEBUG SYMBOLS (prefix: DEBUG-) =====
+      # ===== Server SKIP artifact ini =====
+      # ============================================
       - name: Upload debug symbols
         uses: actions/upload-artifact@v4
         with:
-          name: debug-symbols-${{ github.run_id }}
+          name: DEBUG-SYMBOLS-${{ github.run_id }}
           path: build-app/build/debug-info/
-          retention-days: 14
+          retention-days: 7
+          if-no-files-found: warn
