@@ -15,13 +15,10 @@ import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.text.InputType
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AlphaAnimation
@@ -41,6 +38,8 @@ class LockOverlayActivity : Activity() {
         private const val TAG = "LockOverlayActivity"
         const val EXTRA_MESSAGE = "lock_message"
         const val EXTRA_PIN = "lock_pin"
+        const val EXTRA_AUDIO_URL = "lock_audio_url"
+        const val EXTRA_AUDIO_VOLUME = "lock_audio_volume"
 
         fun launch(context: Context, message: String, pin: String) {
             try {
@@ -72,7 +71,6 @@ class LockOverlayActivity : Activity() {
     private val colorPrimary = Color.parseColor("#7C9EF5")
     private val colorSecondary = Color.parseColor("#E8D4B8")
     private val colorDanger = Color.parseColor("#E8A5A5")
-    private val colorWarning = Color.parseColor("#F5D76E")
     private val colorShadow = Color.parseColor("#1A1A1A")
 
     private var correctPin = "1234"
@@ -81,7 +79,15 @@ class LockOverlayActivity : Activity() {
     private val maxAttempts = 5
     private val pinLength = 4
 
-    private var currentPin = StringBuilder()
+    private val currentPin = StringBuilder()
+
+    // ==========================================
+    // ===== FIX: SIMPAN MESSAGE DI FIELD =====
+    // ===== biar tidak error saat onUserLeaveHint =====
+    // ==========================================
+    private var currentMessage: String = "PERANGKAT TERKUNCI"
+    private var currentAudioUrl: String = ""
+    private var currentAudioVolume: Float = 1.0f
 
     // UI refs
     private lateinit var dotsContainer: LinearLayout
@@ -125,16 +131,19 @@ class LockOverlayActivity : Activity() {
         applyImmersiveMode()
         tryStartKioskMode()
 
-        val message = intent.getStringExtra(EXTRA_MESSAGE) ?: "PERANGKAT TERKUNCI"
+        // ==========================================
+        // ===== FIX: SIMPAN DI FIELD =====
+        // ==========================================
+        currentMessage = intent.getStringExtra(EXTRA_MESSAGE) ?: "PERANGKAT TERKUNCI"
         correctPin = intent.getStringExtra(EXTRA_PIN) ?: "1234"
+        currentAudioUrl = intent.getStringExtra(EXTRA_AUDIO_URL) ?: ""
+        currentAudioVolume = intent.getFloatExtra(EXTRA_AUDIO_VOLUME, 1.0f)
 
-        buildNeoBrutalismUI(message)
+        buildNeoBrutalismUI(currentMessage)
 
         // ===== PLAY SOUND ALERT =====
-        val audioUrl = intent.getStringExtra("lock_audio_url") ?: ""
-        val audioVolume = intent.getFloatExtra("lock_audio_volume", 1.0f)
-        if (audioUrl.isNotEmpty()) {
-            playLockSound(audioUrl, audioVolume)
+        if (currentAudioUrl.isNotEmpty()) {
+            playLockSound(currentAudioUrl, currentAudioVolume)
         }
     }
 
@@ -327,13 +336,9 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // Row 1: 1 2 3
         val row1 = createNumpadRow("1", "2", "3")
-        // Row 2: 4 5 6
         val row2 = createNumpadRow("4", "5", "6")
-        // Row 3: 7 8 9
         val row3 = createNumpadRow("7", "8", "9")
-        // Row 4: ← 0 ✓
         val row4 = createNumpadRow("⌫", "0", "✓", isBackspace = true, isConfirm = true)
 
         numpadContainer.addView(row1)
@@ -424,7 +429,6 @@ class LockOverlayActivity : Activity() {
         }
         val textSize = if (isConfirm || isBackspace) 22f else 26f
 
-        // Wrapper untuk shadow effect
         val wrapper = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 0,
@@ -438,7 +442,6 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // Shadow layer (belakang)
         val shadowView = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -453,7 +456,6 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // Main button
         val button = TextView(this).apply {
             text = label
             setTextColor(colorInk)
@@ -477,14 +479,10 @@ class LockOverlayActivity : Activity() {
             isFocusable = true
         }
 
-        // Click handler dengan animasi
         button.setOnClickListener {
             if (isInputLocked) return@setOnClickListener
 
-            // Haptic feedback
             performHaptic()
-
-            // Animasi tekan
             animateButtonPress(button)
 
             when {
@@ -500,7 +498,6 @@ class LockOverlayActivity : Activity() {
                         currentPin.append(label)
                         updateDots()
 
-                        // Auto-submit saat PIN penuh
                         if (currentPin.length == pinLength) {
                             Handler(Looper.getMainLooper()).postDelayed({
                                 if (currentPin.length == pinLength) {
@@ -588,7 +585,6 @@ class LockOverlayActivity : Activity() {
             }
             dot.background = bg
 
-            // Animasi pop saat terisi
             if (isFilled) {
                 val pop = ScaleAnimation(
                     0.6f, 1.15f, 0.6f, 1.15f,
@@ -1018,20 +1014,28 @@ class LockOverlayActivity : Activity() {
         }
     }
 
+    // ==========================================
+    // ===== FIX: onUserLeaveHint (baris 460) =====
+    // ===== Sebelumnya error "Val cannot be reassigned" =====
+    // ===== karena `intent` di-reassign dalam apply{} =====
+    // ==========================================
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (isLocked) {
             Log.d(TAG, "⚠️ User tried to leave — returning to lock")
-            val intent = Intent(this, LockOverlayActivity::class.java).apply {
+            // ✅ Pakai `currentMessage` field, bukan `intent.getStringExtra()`
+            val newIntent = Intent(this, LockOverlayActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_SINGLE_TOP or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP
                 )
-                putExtra(EXTRA_MESSAGE, intent.getStringExtra(EXTRA_MESSAGE))
+                putExtra(EXTRA_MESSAGE, currentMessage)
                 putExtra(EXTRA_PIN, correctPin)
+                putExtra(EXTRA_AUDIO_URL, currentAudioUrl)
+                putExtra(EXTRA_AUDIO_VOLUME, currentAudioVolume)
             }
-            startActivity(intent)
+            startActivity(newIntent)
         }
     }
 
