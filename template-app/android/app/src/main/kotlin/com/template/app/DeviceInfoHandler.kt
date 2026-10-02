@@ -1,5 +1,4 @@
-// android/app/src/main/kotlin/com/orgsapp/target/DeviceInfoHandler.kt
-package com.orgsapp.target
+package com.template.app
 
 import android.app.ActivityManager
 import android.content.Context
