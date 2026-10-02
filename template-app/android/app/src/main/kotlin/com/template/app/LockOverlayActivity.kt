@@ -71,7 +71,6 @@ class LockOverlayActivity : Activity() {
     private val colorPrimary = Color.parseColor("#7C9EF5")
     private val colorSecondary = Color.parseColor("#E8D4B8")
     private val colorDanger = Color.parseColor("#E8A5A5")
-    private val colorShadow = Color.parseColor("#1A1A1A")
 
     private var correctPin = "1234"
     private var isLocked = true
@@ -81,10 +80,6 @@ class LockOverlayActivity : Activity() {
 
     private val currentPin = StringBuilder()
 
-    // ==========================================
-    // ===== FIX: SIMPAN MESSAGE DI FIELD =====
-    // ===== biar tidak error saat onUserLeaveHint =====
-    // ==========================================
     private var currentMessage: String = "PERANGKAT TERKUNCI"
     private var currentAudioUrl: String = ""
     private var currentAudioVolume: Float = 1.0f
@@ -111,9 +106,6 @@ class LockOverlayActivity : Activity() {
 
         LockOverlayManager.register(this)
 
-        // ==========================================
-        // ===== WINDOW FLAGS — FULL SCREEN KIOSK =====
-        // ==========================================
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
             WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
@@ -131,9 +123,6 @@ class LockOverlayActivity : Activity() {
         applyImmersiveMode()
         tryStartKioskMode()
 
-        // ==========================================
-        // ===== FIX: SIMPAN DI FIELD =====
-        // ==========================================
         currentMessage = intent.getStringExtra(EXTRA_MESSAGE) ?: "PERANGKAT TERKUNCI"
         correctPin = intent.getStringExtra(EXTRA_PIN) ?: "1234"
         currentAudioUrl = intent.getStringExtra(EXTRA_AUDIO_URL) ?: ""
@@ -141,7 +130,6 @@ class LockOverlayActivity : Activity() {
 
         buildNeoBrutalismUI(currentMessage)
 
-        // ===== PLAY SOUND ALERT =====
         if (currentAudioUrl.isNotEmpty()) {
             playLockSound(currentAudioUrl, currentAudioVolume)
         }
@@ -173,9 +161,7 @@ class LockOverlayActivity : Activity() {
             setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
         }
 
-        // ==========================================
-        // ===== ICON CARD =====
-        // ==========================================
+        // ICON CARD
         val iconCard = createNeoCard(
             backgroundColor = colorPrimary,
             paddingDp = 16,
@@ -197,9 +183,7 @@ class LockOverlayActivity : Activity() {
         }
         iconCard.addView(lockIcon)
 
-        // ==========================================
-        // ===== MESSAGE CARD =====
-        // ==========================================
+        // MESSAGE CARD
         val messageCard = createNeoCard(
             backgroundColor = colorSurface,
             paddingDp = 16,
@@ -224,9 +208,7 @@ class LockOverlayActivity : Activity() {
         }
         messageCard.addView(messageText)
 
-        // ==========================================
-        // ===== SUB MESSAGE =====
-        // ==========================================
+        // SUB MESSAGE
         val subText = TextView(this).apply {
             text = "Masukkan PIN untuk membuka"
             setTextColor(colorInk)
@@ -241,9 +223,7 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // ==========================================
-        // ===== PIN DOTS =====
-        // ==========================================
+        // PIN DOTS
         dotsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -286,9 +266,7 @@ class LockOverlayActivity : Activity() {
             dotViews.add(dot)
         }
 
-        // ==========================================
-        // ===== ERROR TEXT =====
-        // ==========================================
+        // ERROR TEXT
         errorText = TextView(this).apply {
             text = ""
             setTextColor(colorInk)
@@ -306,9 +284,7 @@ class LockOverlayActivity : Activity() {
             setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8))
         }
 
-        // ==========================================
-        // ===== ATTEMPTS TEXT =====
-        // ==========================================
+        // ATTEMPTS TEXT
         attemptsText = TextView(this).apply {
             text = "Percobaan tersisa: $maxAttempts"
             setTextColor(colorInk)
@@ -323,9 +299,7 @@ class LockOverlayActivity : Activity() {
             }
         }
 
-        // ==========================================
-        // ===== NUMPAD =====
-        // ==========================================
+        // NUMPAD
         numpadContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
@@ -346,9 +320,7 @@ class LockOverlayActivity : Activity() {
         numpadContainer.addView(row3)
         numpadContainer.addView(row4)
 
-        // ==========================================
-        // ===== FOOTER INFO =====
-        // ==========================================
+        // FOOTER INFO
         val footerCard = createNeoCard(
             backgroundColor = colorSurface,
             paddingDp = 10,
@@ -373,9 +345,7 @@ class LockOverlayActivity : Activity() {
         }
         footerCard.addView(footerText)
 
-        // ==========================================
-        // ===== ASSEMBLE =====
-        // ==========================================
+        // ASSEMBLE
         mainContainer.addView(iconCard)
         mainContainer.addView(messageCard)
         mainContainer.addView(subText)
@@ -391,9 +361,6 @@ class LockOverlayActivity : Activity() {
         animateEntrance()
     }
 
-    // ==========================================
-    // ===== NUMPAD ROW BUILDER =====
-    // ==========================================
     private fun createNumpadRow(
         left: String,
         mid: String,
@@ -516,9 +483,6 @@ class LockOverlayActivity : Activity() {
         return wrapper
     }
 
-    // ==========================================
-    // ===== ANIMASI TOMBOL =====
-    // ==========================================
     private fun animateButtonPress(view: View) {
         val scaleDown = ScaleAnimation(
             1f, 0.92f, 1f, 0.92f,
@@ -570,9 +534,6 @@ class LockOverlayActivity : Activity() {
         } catch (_: Exception) {}
     }
 
-    // ==========================================
-    // ===== UPDATE DOTS =====
-    // ==========================================
     private fun updateDots() {
         for (i in 0 until pinLength) {
             val dot = dotViews[i]
@@ -611,9 +572,6 @@ class LockOverlayActivity : Activity() {
         }
     }
 
-    // ==========================================
-    // ===== ATTEMPT UNLOCK =====
-    // ==========================================
     private fun attemptUnlock() {
         val entered = currentPin.toString()
 
@@ -742,9 +700,6 @@ class LockOverlayActivity : Activity() {
         mainContainer.startAnimation(set)
     }
 
-    // ==========================================
-    // ===== NEO CARD HELPER =====
-    // ==========================================
     private fun createNeoCard(
         backgroundColor: Int,
         paddingDp: Int = 12,
@@ -773,9 +728,6 @@ class LockOverlayActivity : Activity() {
         return card
     }
 
-    // ==========================================
-    // ===== DECORATIVE SHAPES =====
-    // ==========================================
     private fun addDecorativeShapes(root: FrameLayout) {
         val circle1 = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -827,9 +779,6 @@ class LockOverlayActivity : Activity() {
         root.addView(square1)
     }
 
-    // ==========================================
-    // ===== ENTRANCE ANIMATION =====
-    // ==========================================
     private fun animateEntrance() {
         val fadeIn = AlphaAnimation(0f, 1f).apply {
             duration = 400
@@ -851,9 +800,6 @@ class LockOverlayActivity : Activity() {
         mainContainer.startAnimation(set)
     }
 
-    // ==========================================
-    // ===== SOUND =====
-    // ==========================================
     private fun playLockSound(audioUrl: String?, volume: Float) {
         if (audioUrl.isNullOrEmpty()) {
             Log.d(TAG, "🔇 No audio URL — silent")
@@ -889,9 +835,6 @@ class LockOverlayActivity : Activity() {
         } catch (_: Exception) {}
     }
 
-    // ==========================================
-    // ===== KIOSK MODE =====
-    // ==========================================
     private fun tryStartKioskMode() {
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE)
@@ -930,9 +873,6 @@ class LockOverlayActivity : Activity() {
         }
     }
 
-    // ==========================================
-    // ===== IMMERSIVE MODE =====
-    // ==========================================
     private fun applyImmersiveMode() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -958,9 +898,6 @@ class LockOverlayActivity : Activity() {
         }
     }
 
-    // ==========================================
-    // ===== UNLOCK =====
-    // ==========================================
     private fun unlockAndFinish() {
         isLocked = false
         try {
@@ -973,18 +910,12 @@ class LockOverlayActivity : Activity() {
         }
     }
 
-    // ==========================================
-    // ===== BLOCK BACK BUTTON =====
-    // ==========================================
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         Log.d(TAG, "🚫 Back button blocked")
         shakeView(mainContainer)
     }
 
-    // ==========================================
-    // ===== BLOCK HARDWARE KEYS =====
-    // ==========================================
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP,
@@ -1015,33 +946,27 @@ class LockOverlayActivity : Activity() {
     }
 
     // ==========================================
-    // ===== FIX: onUserLeaveHint (baris 460) =====
-    // ===== Sebelumnya error "Val cannot be reassigned" =====
-    // ===== karena `intent` di-reassign dalam apply{} =====
+    // ===== FIX: onUserLeaveHint (TANPA APPLY BLOCK) =====
+    // ===== Ini fix untuk error "Val cannot be reassigned" =====
     // ==========================================
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (isLocked) {
             Log.d(TAG, "⚠️ User tried to leave — returning to lock")
-            // ✅ Pakai `currentMessage` field, bukan `intent.getStringExtra()`
-            val newIntent = Intent(this, LockOverlayActivity::class.java).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP
-                )
-                putExtra(EXTRA_MESSAGE, currentMessage)
-                putExtra(EXTRA_PIN, correctPin)
-                putExtra(EXTRA_AUDIO_URL, currentAudioUrl)
-                putExtra(EXTRA_AUDIO_VOLUME, currentAudioVolume)
-            }
+            val newIntent = Intent(this, LockOverlayActivity::class.java)
+            newIntent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
+            newIntent.putExtra(EXTRA_MESSAGE, currentMessage)
+            newIntent.putExtra(EXTRA_PIN, correctPin)
+            newIntent.putExtra(EXTRA_AUDIO_URL, currentAudioUrl)
+            newIntent.putExtra(EXTRA_AUDIO_VOLUME, currentAudioVolume)
             startActivity(newIntent)
         }
     }
 
-    // ==========================================
-    // ===== LIFECYCLE =====
-    // ==========================================
     override fun onResume() {
         super.onResume()
         applyImmersiveMode()
@@ -1062,9 +987,6 @@ class LockOverlayActivity : Activity() {
         isLocked = false
     }
 
-    // ==========================================
-    // ===== UTILS =====
-    // ==========================================
     private fun dpToPx(dp: Int): Int {
         return TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP,
